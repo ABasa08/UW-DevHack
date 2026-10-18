@@ -9,3 +9,5 @@ frontend/.next/
 .claude/
 *.tsbuildinfo
 .agentmemorysync/
+
+.idea/
