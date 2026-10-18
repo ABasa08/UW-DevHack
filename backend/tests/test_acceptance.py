@@ -312,3 +312,18 @@ def test_evaluation_run_is_sandboxed(client, store):
     assert m["violation_detection"] == "10/10" and m["false_rejections"] == "0/5" and m["workflow_completion"] == "12/12"
     assert m["comparison_intervention"] == "5/5"
     assert store.find("rules") == []  # live state untouched
+
+
+def test_unavailable_brand_explains_and_offers_a_way_forward(client, confirmed_intent):
+    it = ok(client.post("/api/intent/parse", json={"shopper_id": "shp_jordan", "text": "Find Nike running shoes size 10 under $150 total"}))
+    assert any("doesn't carry" in n for n in it["notes"])
+    intent = confirmed_intent(text="Find Nike running shoes size 10 under $150 total", brand="Nike")
+    rec = ok(client.post("/api/recommendations", json={"intent_id": intent["intent_id"]}))
+    assert rec["top_pick"] is None and any("doesn't carry Nike" in n for n in rec["notices"])
+    assert rec["candidates"] and all("Brand is" in c["reasons"][0] for c in rec["candidates"])  # no silent empty list
+    relax = rec["relaxations"][0]
+    assert relax["fields"] == ["brand"] and relax["count"] >= 1
+    # the shopper accepts the relaxation (a new confirmed version), and results appear
+    ok(client.post("/api/intent/confirm", json={"intent_id": intent["intent_id"], "change_reason": "widened search",
+                                                "confirmed_requirements": {**intent["confirmed_requirements"], "brand": None}}))
+    assert ok(client.post("/api/recommendations", json={"intent_id": intent["intent_id"]}))["top_pick"]

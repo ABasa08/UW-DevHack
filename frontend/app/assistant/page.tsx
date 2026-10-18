@@ -252,6 +252,12 @@ function AssistantInner() {
           {recs && <Recommendations recs={recs} busy={busy} applyRules={applyRules}
             onToggleRules={(v) => { setApplyRules(v); loadRecs(intent.intent_id, v); }}
             onReviewSize={(size) => confirm({ ...intent.confirmed_requirements, size }, `Shopper chose to review size ${size} after merchant-approved fit guidance`)}
+            onRelax={(r) => confirm(
+              { ...intent.confirmed_requirements, ...Object.fromEntries(r.fields.map((f: string) => [f, null])),
+                ...(r.fields.includes("deadline_date") ? { deadline_expression: null } : {}) },
+              `Shopper widened the search: ${r.label.toLowerCase()}`,
+            )}
+            onEdit={() => setEditing(true)}
             onVerify={verifyProposal} disabled={purchased} />}
         </div>
       )}
@@ -259,9 +265,9 @@ function AssistantInner() {
   );
 }
 
-function Recommendations({ recs, busy, applyRules, onToggleRules, onReviewSize, onVerify, disabled }: {
+function Recommendations({ recs, busy, applyRules, onToggleRules, onReviewSize, onRelax, onEdit, onVerify, disabled }: {
   recs: any; busy: string | null; applyRules: boolean; onToggleRules: (v: boolean) => void;
-  onReviewSize: (size: string) => void; onVerify: (p: any) => void; disabled: boolean;
+  onReviewSize: (size: string) => void; onRelax: (r: any) => void; onEdit: () => void; onVerify: (p: any) => void; disabled: boolean;
 }) {
   const top = recs.top_pick;
   const agent = recs.agent_proposal;
@@ -290,7 +296,33 @@ function Recommendations({ recs, busy, applyRules, onToggleRules, onReviewSize, 
       {!top ? (
         <Card className="p-6">
           <p className="font-medium">No product satisfies every requirement you confirmed.</p>
-          <p className="mt-1 text-sm text-ink-mute">Here's why each option was ruled out. Edit your requirements to widen the search.</p>
+          {recs.notices?.map((n: string) => (
+            <p key={n} className="mt-3 rounded-lg bg-info-soft px-3 py-2 text-sm text-info">{n}</p>
+          ))}
+          {recs.relaxations?.length > 0 ? (
+            <div className="mt-4 space-y-2">
+              <p className="text-sm text-ink-soft">These changes would find something. Nothing changes unless you pick one:</p>
+              {recs.relaxations.map((r: any) => (
+                <div key={r.label} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-paper-line px-4 py-3">
+                  <p className="text-sm">
+                    <span className="font-medium">{r.label}</span>
+                    <span className="text-ink-mute"> · {r.count} match{r.count > 1 ? "es" : ""}, from {r.finds} at {money(r.charge_cents)}</span>
+                  </p>
+                  <Button size="sm" variant="secondary" loading={busy === "confirm"} disabled={disabled} onClick={() => onRelax(r)}>
+                    {r.label}
+                  </Button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="mt-2 text-sm text-ink-mute">
+              Nothing in the catalog matches even with fewer filters. Try a different size, budget or product type.
+            </p>
+          )}
+          <div className="mt-4 flex items-center gap-3">
+            <Button size="sm" variant="ghost" onClick={onEdit}>Edit requirements</Button>
+            <span className="text-xs text-ink-mute">Below: why each product was ruled out.</span>
+          </div>
         </Card>
       ) : (
         <Card className="overflow-hidden">

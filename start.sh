@@ -30,7 +30,8 @@ if [ ! -d "$ROOT/frontend/node_modules" ]; then
   npm --prefix "$ROOT/frontend" install --no-audit --no-fund
 fi
 
-(cd "$ROOT/backend" && exec .venv/bin/uvicorn app.main:app --port 8000) &
+# --reload restarts the API automatically when backend code changes.
+(cd "$ROOT/backend" && exec .venv/bin/uvicorn app.main:app --port 8000 --reload --reload-dir app) &
 BACK=$!
 trap 'kill $BACK 2>/dev/null' EXIT
 

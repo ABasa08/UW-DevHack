@@ -30,6 +30,12 @@ WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", 
 MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
 COLORS = ["black", "white", "grey", "gray", "navy", "blue", "red", "green", "sand", "orange"]
 BRANDS = ["stridelab", "ridgeback", "metro", "forge"]
+OTHER_BRANDS = [
+    (r"\bjordans?\b", "Nike Jordan"), (r"\bnike\b", "Nike"), (r"\badidas\b", "Adidas"), (r"\bnew balance\b", "New Balance"),
+    (r"\basics\b", "Asics"), (r"\bhoka\b", "Hoka"), (r"\bbrooks\b", "Brooks"), (r"\bsaucony\b", "Saucony"),
+    (r"\bpuma\b", "Puma"), (r"\breebok\b", "Reebok"), (r"\bon cloud\w*\b", "On"), (r"\bvans\b", "Vans"),
+    (r"\bconverse\b", "Converse"), (r"\bsalomon\b", "Salomon"), (r"\ballbirds\b", "Allbirds"),
+]
 
 
 _force_fallback: contextvars.ContextVar[bool] = contextvars.ContextVar("force_fallback", default=False)
@@ -236,6 +242,12 @@ def _fallback_requirements(text: str) -> dict:
     for b in BRANDS:
         if b in t:
             out["brand"] = {"stridelab": "StrideLab", "ridgeback": "Ridgeback", "metro": "Metro", "forge": "Forge"}[b]
+    if "brand" not in out:
+        # Common brands this store doesn't carry: recognise them so the shopper is told, rather than silently ignored.
+        for pattern, name in OTHER_BRANDS:
+            if re.search(pattern, t):
+                out["brand"] = name
+                break
     if "debit" in t:
         out["payment_preference"] = "debit"
     m = re.search(r"\b(two|three|2|3)\s+pairs?\b", t)

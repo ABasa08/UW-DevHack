@@ -21,6 +21,10 @@ def _shopper(store: BaseStore, shopper_id: str) -> dict:
 def parse_intent(store: BaseStore, shopper_id: str, text: str) -> dict:
     _shopper(store, shopper_id)
     parsed = parse_shopping_request(text, today(store))
+    brand = parsed["requirements"].get("brand")
+    if brand and not any(brand_matches(p["brand"], brand) for p in store.find("products", {"status": "active"})):
+        parsed["notes"].append(f"StrideLab Running doesn't carry {brand}. Brands available here: {', '.join(carried_brands(store))}. "
+                               "You can clear the brand below to see similar shoes.")
     intent_id = next_id(store, "int")
     intent = {
         "_id": intent_id, "intent_id": intent_id, "shopper_id": shopper_id, "merchant_id": MERCHANT_ID,
@@ -73,28 +77,41 @@ def _confirmed(intent: dict) -> dict:
     return intent["confirmed_requirements"]
 
 
-def recommend(store: BaseStore, intent_id: str, apply_learned_rules: bool = True) -> dict:
-    intent = get_intent(store, intent_id)
-    req = _confirmed(intent)
-    shopper = _shopper(store, intent["shopper_id"])
-    pm = req.get("payment_method_id") or shopper["default_payment_method"]
+def brand_matches(product_brand: str, wanted: str) -> bool:
+    a, b = product_brand.strip().lower(), wanted.strip().lower()
+    return a == b or a in b or b in a
+
+
+def carried_brands(store: BaseStore) -> list[str]:
+    return sorted({p["brand"] for p in store.find("products", {"status": "active"})})
+
+
+def _evaluate_candidates(store: BaseStore, req: dict, shopper_id: str, pm: str, apply_learned_rules: bool) -> list[dict]:
     candidates = []
     for product in store.find("products", {"status": "active"}):
-        reasons = []
         if req.get("category") and product["category"] != req["category"]:
             continue
-        if req.get("brand") and product["brand"].lower() != req["brand"].lower():
-            continue
         variant = matching_variant(product, req)
+        if req.get("brand") and not brand_matches(product["brand"], req["brand"]):
+            reason = f"Brand is {product['brand']}, not {req['brand']}"
+            if not variant:
+                reason += f"; also not offered in {req.get('color') or ''} size {req.get('size')}".replace("  ", " ")
+            candidates.append({"product_id": product["product_id"], "name": product["name"], "eligible": False,
+                               "reasons": [reason], "price_cents": product["price_cents"], "best_option": None})
+            continue
         if not variant:
-            reasons.append(f"Not offered in {req.get('color') or ''} size {req.get('size')}".replace("  ", " "))
-            candidates.append({"product_id": product["product_id"], "name": product["name"], "eligible": False, "reasons": reasons,
+            colors = sorted({v["color"] for v in product["variants"] if not req.get("size") or v["size"] == req["size"]})
+            reason = f"Not offered in {req.get('color') or ''} size {req.get('size')}".replace("  ", " ")
+            if colors and req.get("color"):
+                reason += f" (size {req['size']} comes in {', '.join(colors)})"
+            candidates.append({"product_id": product["product_id"], "name": product["name"], "eligible": False, "reasons": [reason],
                                "price_cents": product["price_cents"], "best_option": None})
             continue
         base = {"shipping_option": "standard", "payment_method_id": pm}
-        opts = build_options(store, req, product, intent["shopper_id"], base, apply_learned_rules)
+        opts = build_options(store, req, product, shopper_id, base, apply_learned_rules)
         passing = [o for o in opts if o["status"] == PASS]
         best = passing[0] if passing else (opts[0] if opts else None)
+        reasons = []
         if not passing:
             if product["inventory_by_variant"].get(variant["variant_id"], 0) < req.get("quantity", 1):
                 reasons.append(f"Out of stock in {variant['color']} size {variant['size']}")
@@ -103,10 +120,47 @@ def recommend(store: BaseStore, intent_id: str, apply_learned_rules: bool = True
         candidates.append({"product_id": product["product_id"], "name": product["name"], "eligible": bool(passing),
                            "reasons": reasons, "price_cents": product["price_cents"], "variant_id": variant["variant_id"],
                            "best_option": best})
+    return candidates
+
+
+RELAXABLE = [("brand", "Search without the brand"), ("color", "Search any color"), ("deadline_date", "Search without the delivery deadline")]
+
+
+def _no_match_help(store: BaseStore, req: dict, shopper_id: str, pm: str, apply_learned_rules: bool) -> tuple[list[str], list[dict]]:
+    """When nothing qualifies: explain why, and offer single-field relaxations that would actually find something."""
+    notices = []
+    if req.get("brand") and not any(brand_matches(p["brand"], req["brand"]) for p in store.find("products", {"status": "active"})):
+        notices.append(f"StrideLab Running doesn't carry {req['brand']}. Brands available here: {', '.join(carried_brands(store))}.")
+    def attempt(fields: list[str], label: str) -> dict | None:
+        relaxed = {**req, **{f: None for f in fields}, **({"deadline_expression": None} if "deadline_date" in fields else {})}
+        found = sorted([c for c in _evaluate_candidates(store, relaxed, shopper_id, pm, apply_learned_rules) if c["eligible"]],
+                       key=lambda c: c["best_option"]["charge_cents"])
+        if not found:
+            return None
+        return {"fields": fields, "label": label, "finds": found[0]["name"], "count": len(found),
+                "charge_cents": found[0]["best_option"]["charge_cents"]}
+
+    present = [(f, label) for f, label in RELAXABLE if req.get(f)]
+    relaxations = [r for r in (attempt([f], label) for f, label in present) if r]
+    if not relaxations and len(present) > 1:
+        names = {"brand": "brand", "color": "color", "deadline_date": "deadline"}
+        combo = attempt([f for f, _ in present], "Search without the " + " and ".join(names[f] for f, _ in present))
+        if combo:
+            relaxations.append(combo)
+    return notices, relaxations
+
+
+def recommend(store: BaseStore, intent_id: str, apply_learned_rules: bool = True) -> dict:
+    intent = get_intent(store, intent_id)
+    req = _confirmed(intent)
+    shopper = _shopper(store, intent["shopper_id"])
+    pm = req.get("payment_method_id") or shopper["default_payment_method"]
+    candidates = _evaluate_candidates(store, req, intent["shopper_id"], pm, apply_learned_rules)
     eligible = sorted([c for c in candidates if c["eligible"]], key=lambda c: (c["best_option"]["charge_cents"], c["name"]))
     top = eligible[0] if eligible else None
     agent = None
     guidance = []
+    notices, relaxations = ([], []) if top else _no_match_help(store, req, intent["shopper_id"], pm, apply_learned_rules)
     if top:
         product = store.get("products", top["product_id"])
         agent = naive_agent_proposal(store, req, product, pm)
@@ -130,6 +184,7 @@ def recommend(store: BaseStore, intent_id: str, apply_learned_rules: bool = True
         "agent_disclosure": ("Proposal drafted by the demo's naive agent planner, which evaluates card-offer thresholds "
                              "before discounts. Every proposal must pass the deterministic verifier before checkout."),
         "guidance": guidance, "learned_rules_applied": apply_learned_rules,
+        "notices": notices, "relaxations": relaxations,
     }
 
 

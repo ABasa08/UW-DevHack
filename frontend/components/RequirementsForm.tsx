@@ -73,9 +73,9 @@ export default function RequirementsForm({
           {SIZES.map((s) => <option key={s} value={s}>{s}</option>)}
         </select>
       </Field>
-      <Field label="Maximum charge (USD)" flag={flags.max_charge_cents} inferred={had("max_charge_cents")}>
-        <div className="flex items-center gap-2">
-          <div className="relative flex-1">
+      <div>
+        <Field label="Maximum charge (USD)" flag={flags.max_charge_cents} inferred={had("max_charge_cents")}>
+          <div className="relative">
             <span className="pointer-events-none absolute left-3 top-2 text-sm text-ink-mute">$</span>
             <input
               type="number"
@@ -86,7 +86,7 @@ export default function RequirementsForm({
               onChange={(e) => set({ max_charge_cents: e.target.value === "" ? null : Math.round(parseFloat(e.target.value) * 100) })}
             />
           </div>
-        </div>
+        </Field>
         <label className="mt-1.5 flex items-center gap-2 text-xs text-ink-soft">
           <input
             type="checkbox"
@@ -95,7 +95,7 @@ export default function RequirementsForm({
           />
           Limit includes shipping and tax (total card charge)
         </label>
-      </Field>
+      </div>
       <Field label="Deliver by" inferred={had("deadline_date")}>
         <input
           type="date"
