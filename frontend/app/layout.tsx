@@ -14,8 +14,10 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={`${sans.variable} ${display.variable}`}>
-      <body className="font-sans">
+    // suppressHydrationWarning: browser extensions (e.g. Grammarly) add attributes to <html>/<body> before React loads.
+    // It only ignores attribute differences on these two elements, not on anything inside them.
+    <html lang="en" className={`${sans.variable} ${display.variable}`} suppressHydrationWarning>
+      <body className="font-sans" suppressHydrationWarning>
         <DemoProvider>
           <AppShell>{children}</AppShell>
         </DemoProvider>

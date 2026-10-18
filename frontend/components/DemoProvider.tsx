@@ -11,6 +11,7 @@ export type DemoState = {
   merchant: { name: string };
   shoppers: { shopper_id: string; display_name: string; role: string; payment_methods: string[]; default_payment_method: string }[];
   payment_methods: { payment_method_id: string; label: string; type: string; enrolled_offers: string[] }[];
+  next_delivery_at: string | null;
   disclosure: string;
 };
 
