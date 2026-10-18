@@ -11,6 +11,10 @@ os.environ.pop("MONGODB_URI", None)
 
 from fastapi.testclient import TestClient  # noqa: E402
 
+import app.core  # noqa: E402
+
+app.core.load_env = lambda: None  # tests never read the developer's backend/.env (keys, admin token, shop)
+
 from app.main import create_app  # noqa: E402
 from app.store import MemoryStore  # noqa: E402
 
@@ -25,6 +29,13 @@ def store():
 @pytest.fixture()
 def client(store):
     return TestClient(create_app(store))
+
+
+@pytest.fixture()
+def admin(monkeypatch):
+    """Bearer header for the token-protected /api/admin audit routes."""
+    monkeypatch.setenv("PERKPILOT_ADMIN_TOKEN", "t0ken")
+    return {"Authorization": "Bearer t0ken"}
 
 
 def ok(resp):

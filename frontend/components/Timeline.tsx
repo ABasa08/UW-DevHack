@@ -9,32 +9,29 @@ const LABELS: Record<string, string> = {
   delivered: "Delivered",
 };
 
-export function ShipmentTimeline({ shipment }: { shipment: any }) {
-  if (!shipment) return null;
-  const done = new Map<string, any>(shipment.events.map((e: any) => [e.status, e]));
-  const steps = shipment.planned.filter((p: any) => p.status !== "delayed" || done.has("delayed"));
+export function ShipmentTimeline({ shipping }: { shipping: any }) {
+  if (!shipping) return null;
   return (
     <ol className="relative space-y-4 pl-6">
-      <span className="absolute bottom-2 left-[7px] top-2 w-px bg-paper-line" />
-      {steps.map((p: any) => {
-        const ev = done.get(p.status);
-        return (
-          <li key={p.status} className="relative">
-            <span
-              className={cx(
-                "absolute -left-6 top-1 h-[15px] w-[15px] rounded-full border-2",
-                ev ? (p.status === "delayed" ? "border-warn bg-warn" : "border-pass bg-pass") : "border-paper-line bg-white",
-              )}
-            />
-            <p className={cx("text-sm font-medium", !ev && "text-ink-mute")}>{LABELS[p.status] ?? p.status}</p>
-            <p className="text-xs text-ink-mute">{ev ? dateTime(ev.at) : `Scheduled ${dateTime(p.at)}`}</p>
-          </li>
-        );
-      })}
+      <span className="absolute bottom-2 left-[7px] top-2 w-px bg-paper-line" aria-hidden="true" />
+      {shipping.steps.map((s: any) => (
+        <li key={s.status} className="relative">
+          <span
+            aria-hidden="true"
+            className={cx(
+              "absolute -left-6 top-1 h-[15px] w-[15px] rounded-full border-2",
+              s.done ? (s.status === "delayed" ? "border-warn bg-warn" : "border-pass bg-pass") : "border-paper-line bg-white",
+            )}
+          />
+          <p className={cx("text-sm font-medium", !s.done && "text-ink-mute")}>{LABELS[s.status] ?? s.status}</p>
+          <p className="text-xs text-ink-mute">{s.done ? dateTime(s.at) : `Expected ${dateTime(s.at)}`}</p>
+        </li>
+      ))}
     </ol>
   );
 }
 
+// Admin audit view only: raw hash-chained events. Customer pages never receive these.
 export function EventLog({ events }: { events: any[] }) {
   return (
     <ol className="space-y-2">

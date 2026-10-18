@@ -24,7 +24,7 @@ export default function ReportPage() {
 
   if (res.loading && !res.data) return <Loading />;
   if (res.error) return <ErrorBox error={res.error} onRetry={res.reload} />;
-  const { purchase: p, product, shipment } = res.data;
+  const { purchase: p, product } = res.data;
 
   async function submit() {
     setBusy(true);
@@ -51,7 +51,7 @@ export default function ReportPage() {
         <div className="text-sm">
           <p className="font-medium">{p.product_name} · <span className="capitalize">{p.color}</span> · {sizeLabel(p.size)}</p>
           <p className="text-ink-mute">
-            {p.purchase_id} · {money(p.approved_charge_cents)} · {shipment?.delivered_at ? `delivered ${dayLabel(shipment.actual_delivery_date)}` : "not delivered yet"}
+            {p.purchase_id} · {money(p.approved_charge_cents)} · {p.shipping?.delivered_on ? `delivered ${dayLabel(p.shipping.delivered_on)}` : "not delivered yet"}
           </p>
         </div>
         <span className="ml-auto hidden rounded-full bg-pass-soft px-3 py-1 text-xs text-pass sm:block">Order details attached automatically</span>
@@ -71,7 +71,7 @@ export default function ReportPage() {
           ))}
         </div>
         <div className="mt-4 flex items-center justify-between gap-3">
-          <p className="text-xs text-ink-mute">PerkPilot compares your report with the purchase record, carrier and payment events. It won't guess.</p>
+          <p className="text-xs text-ink-mute">PerkPilot compares your report with your order, delivery and payment details. It won't guess.</p>
           <Button onClick={submit} loading={busy} disabled={text.trim().length < 2}>Submit</Button>
         </div>
       </Card>

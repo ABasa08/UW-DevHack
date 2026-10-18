@@ -30,8 +30,8 @@ The shopper confirms a structured version of what they want. A deterministic Pyt
 
 ## What we built
 
-- **Shopper app** (Next.js + Tailwind): storefront, product pages, AI assistant with an editable confirmation card, checkout verification with corrected options, purchase record with integrity checks, orders, and a resolution center.
-- **Merchant console**: a dashboard computed from persisted events, rule review with evidence and small-sample warnings, approve/reject/pause controls, a claims list, and a sandboxed evaluation runner.
+- **Shopper app** (Next.js + Tailwind): storefront, product pages, AI assistant with an editable confirmation card, checkout verification with corrected options, an order confirmation page (order, payment and delivery status plus a single "verified purchase" indicator), orders, and a resolution center. Shoppers never receive record hashes, the event log or per-rule checks.
+- **Merchant console**: a dashboard computed from persisted events, rule review with evidence and small-sample warnings, approve/reject/pause controls, a claims list, an order audit (record hash, event chain, every verification check, full record), and a sandboxed evaluation runner. The order audit is served by `/api/admin/*`, which requires `PERKPILOT_ADMIN_TOKEN` as a bearer token in every mode.
 - **Backend** (FastAPI + Pydantic): verifier, pricing/offer engine, purchase records with SHA-256 hashes and an append-only hash-chained event log, claim classifier, policy-constrained remedy engine, exchange/refund simulator, learning engine, metrics and evaluation.
 - **Persistence**: MongoDB when `MONGODB_URI` is set; otherwise a local JSON-file store that survives refreshes and restarts. The UI shows which one is active.
 
@@ -107,7 +107,8 @@ Copy `backend/.env.example` to `backend/.env`. Every value is optional; the file
 |---|---|
 | `GEMINI_API_KEY` | Live Gemini interpretation. Without it the disclosed fallback interpreter runs. |
 | `MONGODB_URI` | MongoDB persistence. Without it state is saved to `backend/data/demo_state.json`. |
-| `PERKPILOT_MODE=live` | Real clock, no seed data, simulated payment/refund/shipping routes removed. Requires `MONGODB_URI` and `PERKPILOT_ADMIN_TOKEN` (bearer token for `/api/merchant/*` and `/api/eval/*`). |
+| `PERKPILOT_ADMIN_TOKEN` | Unlocks the merchant console's order audit (`/api/admin/*`) in every mode; the audit stays closed without it. |
+| `PERKPILOT_MODE=live` | Real clock, no seed data, simulated payment/refund/shipping routes removed, and simulated orders are never shown to shoppers. Requires `MONGODB_URI` and `PERKPILOT_ADMIN_TOKEN` (bearer token for `/api/merchant/*` and `/api/eval/*`). |
 | `SHOPIFY_*` | Shopify catalog sync. See the next section. |
 
 ### Tests

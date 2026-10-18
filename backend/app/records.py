@@ -86,6 +86,56 @@ def integrity(store: BaseStore, record: dict) -> dict:
     }
 
 
+def is_verified(store: BaseStore, record: dict) -> bool:
+    """The one answer a shopper gets: every blocking check passed, and the record and its event chain are intact."""
+    i = integrity(store, record)
+    return i["hash_matches"] and i["event_chain_valid"] and not any(
+        c["status"] == "FAIL" and c.get("blocking", True) for c in record["verification_results"])
+
+
+PAYMENT_STATUS = {"refunded": "Refunded", "partially_refunded": "Partially refunded", "returned_for_credit": "Refunded as store credit"}
+CUSTOMER_FIELDS = ("purchase_id", "kind", "parent_purchase_id", "status", "source", "created_at", "product_id", "product_name",
+                   "color", "size", "quantity", "approved_charge_cents", "currency", "approved_delivery_date",
+                   "confirmed_requirements", "original_request")
+PRICE_FIELDS = ("unit_price_cents", "quantity", "merchandise_cents", "shipping_cents", "shipping_label", "tax_cents",
+                "coupon_discount_cents", "charge_cents", "later_statement_credit_cents")
+
+
+def customer_shipping(store: BaseStore, purchase_id: str) -> dict | None:
+    """Tracking steps without carrier-fixture internals (e.g. which variant the simulator delivers)."""
+    sh = shipment_for(store, purchase_id)
+    if not sh:
+        return None
+    done = {e["status"]: e["at"] for e in sh["events"]}
+    return {
+        "status": sh["status"], "carrier": sh["carrier_fixture"], "simulated": True,
+        "expected_delivery_date": sh["expected_delivery_date"], "delivered_on": sh["actual_delivery_date"],
+        "steps": [{"status": s["status"], "at": done.get(s["status"], s["at"]), "done": s["status"] in done}
+                  for s in sh["planned"] if s["status"] != "delayed" or "delayed" in done],
+    }
+
+
+def customer_purchase(store: BaseStore, record: dict) -> dict:
+    """What a shopper sees: order, payment and delivery status plus a single verified flag.
+
+    The record hash, event chain, per-rule verification results and internal IDs (authorization event,
+    transaction, intent) are never sent here; they are only served by the token-protected /api/admin routes.
+    """
+    bd = record["full_price_breakdown"]
+    pm = record["payment_method_reference"]
+    # Seeded history carries a placeholder instead of real checkout checks; it never counts as checks run.
+    checks = [c for c in record["verification_results"] if c["status"] in ("PASS", "FAIL") and c.get("rule") != "SEEDED_HISTORY"]
+    return {
+        **{k: record.get(k) for k in CUSTOMER_FIELDS},
+        "price": {k: bd.get(k) for k in PRICE_FIELDS} | {"coupons": [c["code"] for c in bd["coupon_evaluations"] if c["eligible"]]},
+        "payment": {"status": "No charge" if record["approved_charge_cents"] == 0 else PAYMENT_STATUS.get(record["status"], "Paid"),
+                    "method": pm["label"], "simulated": pm.get("simulated", True)},
+        "shipping": customer_shipping(store, record["purchase_id"]),
+        "verification": {"verified": is_verified(store, record), "checks_passed": sum(c["status"] == "PASS" for c in checks),
+                         "checks_total": len(checks)},
+    }
+
+
 # ---------------------------------------------------------------- shipments
 
 

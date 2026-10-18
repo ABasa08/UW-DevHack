@@ -162,6 +162,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
                 <NavLink href="/merchant" exact>Dashboard</NavLink>
                 <NavLink href="/merchant/rules">Rule review</NavLink>
                 <NavLink href="/merchant/claims">Claims</NavLink>
+                <NavLink href="/merchant/orders">Order audit</NavLink>
                 <NavLink href="/merchant/evaluation">Evaluation</NavLink>
               </>
             ) : (
@@ -188,6 +189,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
               <NavLink href="/merchant" exact>Dashboard</NavLink>
               <NavLink href="/merchant/rules">Rules</NavLink>
               <NavLink href="/merchant/claims">Claims</NavLink>
+              <NavLink href="/merchant/orders">Audit</NavLink>
               <NavLink href="/merchant/evaluation">Evaluation</NavLink>
             </>
           ) : (

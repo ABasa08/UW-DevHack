@@ -8,7 +8,7 @@ from .ai import parse_complaint
 from .core import DomainError, MERCHANT_ID, append_event, fmt_cents, next_id, now
 from .learning import evaluate_group, group_stats
 from .pricing import estimate_delivery, find_variant, sizes_in_order
-from .records import make_purchase_record, make_shipment, process_shipments, shipment_for
+from .records import customer_purchase, customer_shipping, make_purchase_record, make_shipment, process_shipments, shipment_for
 from .store import BaseStore
 from .verifier import FAIL, INFO, PASS, _check
 
@@ -58,7 +58,7 @@ def classify(store: BaseStore, purchase: dict, issue: dict, exclude_claim_id: st
     evidence = [
         {"type": "purchase_record", "ref": purchase["purchase_id"], "status": "confirmed",
          "summary": f"Shopper approved {_variant_label(product, purchase['variant_id'])}, charge {fmt_cents(purchase['approved_charge_cents'])}, "
-                    f"delivery by {purchase['approved_delivery_date']}. Record hash {purchase['record_hash'][:12]}…"},
+                    f"delivery by {purchase['approved_delivery_date']}."},  # the record hash is admin-only (/api/admin audit)
     ]
     if sh:
         if delivered:
@@ -457,7 +457,7 @@ def exchange_status(store: BaseStore, claim: dict) -> dict | None:
         return None
     ex_id = remedy["execution"]["exchange_purchase_id"]
     sh = shipment_for(store, ex_id)
-    return {"exchange_purchase_id": ex_id, "shipment": sh, "delivered": bool(sh and sh.get("delivered_at")),
+    return {"exchange_purchase_id": ex_id, "shipping": customer_shipping(store, ex_id), "delivered": bool(sh and sh.get("delivered_at")),
             "replacement_variant_id": remedy["execution"]["replacement_variant_id"]}
 
 
@@ -497,10 +497,22 @@ def confirm_outcome(store: BaseStore, claim_id: str, shopper_id: str, outcome: s
     return {"claim": claim, "rule_proposal": proposal, "duplicate": False}
 
 
+TIMELINE_LABELS = {
+    "claim.created": "Issue reported", "claim.classified": "Checked against your order record",
+    "remedies.presented": "Options offered", "remedy.executed": "Option accepted",
+    "refund.simulated": "Refund issued", "exchange_order.created": "Replacement order created",
+    "claim.outcome_confirmed": "Outcome confirmed",
+}
+
+
 def claim_view(store: BaseStore, claim_id: str) -> dict:
+    """Shopper-facing claim. The hashed event log stays behind /api/admin; the shopper gets a plain timeline."""
     claim = _claim(store, claim_id)
     purchase = _purchase(store, claim["purchase_id"])
     remedies = sorted(store.find("remedies", {"claim_id": claim_id}), key=lambda r: r["rank"])
     events = sorted([e for e in store.find("events", {"subject_id": claim_id})], key=lambda e: e["seq"])
-    return {"claim": claim, "purchase": purchase, "remedies": remedies, "exchange": exchange_status(store, claim), "events": events}
+    timeline = [{"label": TIMELINE_LABELS.get(e["event_type"], e["event_type"].replace(".", " ").replace("_", " ").capitalize()),
+                 "at": e["timestamp"]} for e in events]
+    return {"claim": claim, "purchase": customer_purchase(store, purchase), "remedies": remedies,
+            "exchange": exchange_status(store, claim), "timeline": timeline}
 

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useState } from "react";
-import CheckList from "@/components/CheckList";
+import VerifiedSeal from "@/components/VerifiedSeal";
 import { useDemo } from "@/components/DemoProvider";
 import { ShipmentTimeline } from "@/components/Timeline";
 import { Badge, Button, Card, ErrorBox, Eyebrow, Loading, SimLabel, cx, type Tone } from "@/components/ui";
@@ -42,6 +42,22 @@ function Bubble({ who, children, tone = "assistant" }: { who: string; children: 
   );
 }
 
+function ExchangeSeal({ checks }: { checks: any[] }) {
+  const counted = checks.filter((c) => c.status === "PASS" || c.status === "FAIL");
+  const fails = counted.filter((c) => c.status === "FAIL");
+  const passed = counted.length - fails.length;
+  return (
+    <VerifiedSeal
+      className="mt-2"
+      verified={!fails.length}
+      passed={passed}
+      total={counted.length}
+      title={fails.length ? "This replacement can't be sent" : "Replacement checked"}
+      body={fails.length ? fails.map((c) => c.explanation).join(" ") : `Same price, in stock and arriving on time. ${passed} of ${counted.length} checks passed.`}
+    />
+  );
+}
+
 export default function ClaimPage() {
   const { id } = useParams<{ id: string }>();
   const { shopperId, version, bump, state } = useDemo();
@@ -57,7 +73,7 @@ export default function ClaimPage() {
 
   if (res.loading && !res.data) return <Loading />;
   if (res.error) return <ErrorBox error={res.error} onRetry={res.reload} />;
-  const { claim, purchase, remedies, exchange, events } = res.data;
+  const { claim, purchase, remedies, exchange, timeline } = res.data;
   const shopperName = state?.shoppers.find((s) => s.shopper_id === claim.shopper_id)?.display_name ?? "You";
   const accepted = remedies.find((r: any) => r.status === "accepted");
   const chosen = remedies.find((r: any) => r.remedy_id === selected);
@@ -109,7 +125,7 @@ export default function ClaimPage() {
             <Bubble who={shopperName} tone="shopper">{claim.complaint_text}</Bubble>
             <Bubble who="AI">
               <p>
-                I pulled up your verified purchase record for <b>{purchase.purchase_id}</b>, the carrier record and the payment events.
+                I pulled up your verified purchase record for <b>{purchase.purchase_id}</b>, the delivery record and the payment details.
               </p>
               <p className="mt-2 text-ink-soft">{claim.classification_reason}</p>
               <p className="mt-2 text-xs text-ink-mute">
@@ -173,17 +189,14 @@ export default function ClaimPage() {
                 <Card className="mt-4 animate-rise p-5">
                   <p className="text-sm font-semibold">Confirm: {chosen.title}</p>
                   {chosen.remedy_type === "exchange" && (
-                    <div className="mt-2 rounded-xl bg-paper-sunk p-3">
-                      <p className="mb-1 text-xs font-medium text-ink-mute">Replacement re-verified</p>
-                      <CheckList checks={chosen.exchange_verification.checks} compact />
-                    </div>
+                    <ExchangeSeal checks={chosen.exchange_verification.checks} />
                   )}
                   {isRefundLike && (
                     <fieldset className="mt-3 space-y-2 text-sm">
                       <legend className="mb-1 text-xs font-medium text-ink-mute">Where should the money go? <SimLabel /></legend>
                       <label className="flex gap-2">
                         <input type="radio" checked={payout === "original_payment_method"} onChange={() => setPayout("original_payment_method")} />
-                        <span>Refund to {purchase.payment_method_reference.label} <span className="text-ink-mute">(standard refund; real refunds can take several business days)</span></span>
+                        <span>Refund to {purchase.payment.method} <span className="text-ink-mute">(standard refund; real refunds can take several business days)</span></span>
                       </label>
                       <label className="flex gap-2">
                         <input type="radio" checked={payout === "push_to_card_concept"} onChange={() => setPayout("push_to_card_concept")} />
@@ -220,7 +233,7 @@ export default function ClaimPage() {
                 <div className="mt-4 grid gap-5 sm:grid-cols-2">
                   <div>
                     <p className="text-xs font-medium text-ink-mute">Replacement · {exchange.exchange_purchase_id}</p>
-                    <div className="mt-3"><ShipmentTimeline shipment={exchange.shipment} /></div>
+                    <div className="mt-3"><ShipmentTimeline shipping={exchange.shipping} /></div>
                   </div>
                   <div className="space-y-3">
                     {!exchange.delivered ? (
@@ -301,10 +314,10 @@ export default function ClaimPage() {
           <Card className="p-5">
             <p className="text-sm font-semibold">Timeline</p>
             <ol className="mt-3 space-y-2 text-sm">
-              {events.map((e: any) => (
-                <li key={e.event_id} className="flex justify-between gap-3">
-                  <span>{e.event_type.replace(/[._]/g, " ")}</span>
-                  <span className="shrink-0 text-xs text-ink-mute">{dateTime(e.timestamp)}</span>
+              {timeline.map((e: any, i: number) => (
+                <li key={i} className="flex justify-between gap-3">
+                  <span>{e.label}</span>
+                  <span className="shrink-0 text-xs text-ink-mute">{dateTime(e.at)}</span>
                 </li>
               ))}
             </ol>

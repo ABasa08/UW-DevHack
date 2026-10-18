@@ -6,6 +6,7 @@ import { useState } from "react";
 import { useDemo } from "@/components/DemoProvider";
 import { ProductImage } from "@/components/ProductCard";
 import CheckList from "@/components/CheckList";
+import VerifiedSeal from "@/components/VerifiedSeal";
 import { Badge, Button, Card, ErrorBox, Eyebrow, KV, Loading, SimLabel, cx } from "@/components/ui";
 import { ApiError, api } from "@/lib/api";
 import { dayLabel, money, sizeLabel } from "@/lib/format";
@@ -47,7 +48,6 @@ export default function CheckoutPage() {
   const [error, setError] = useState<unknown>(null);
   const [approved, setApproved] = useState(false);
   const [newQuote, setNewQuote] = useState<string | null>(null);
-  const [showPassing, setShowPassing] = useState(false);
 
   if (res.loading && !res.data) return <Loading label="Running verification…" />;
   if (res.error) return <ErrorBox error={res.error} onRetry={res.reload} />;
@@ -57,6 +57,7 @@ export default function CheckoutPage() {
   const bd = r.price_breakdown;
   const variant = product.variants.find((v: any) => v.variant_id === quote.proposal.variant_id);
   const fails = r.checks.filter((c: any) => c.status === "FAIL");
+  const passed = r.checks.filter((c: any) => c.status === "PASS").length;
   const isPass = r.status === "PASS";
 
   async function useProposal(proposal: any, key: string) {
@@ -180,12 +181,9 @@ export default function CheckoutPage() {
               </div>
             </Card>
             <Card className="p-5">
-              <p className="text-sm font-semibold">Verification checks</p>
-              <CheckList checks={fails} />
-              <button className="mt-2 text-sm font-medium text-ink-soft underline-offset-2 hover:underline" onClick={() => setShowPassing((v) => !v)}>
-                {showPassing ? "Hide" : "Show"} {r.checks.length - fails.length} checks that passed
-              </button>
-              {showPassing && <div className="mt-2 border-t border-paper-line pt-1"><CheckList checks={r.checks.filter((c: any) => c.status !== "FAIL")} compact /></div>}
+              <p className="text-sm font-semibold">Why this cart was stopped</p>
+              <CheckList checks={fails} compact />
+              <p className="mt-2 text-xs text-ink-mute">Everything else matched what you confirmed.</p>
             </Card>
           </div>
 
@@ -233,10 +231,13 @@ export default function CheckoutPage() {
                 </div>
               </div>
             </Card>
-            <Card className="p-5">
-              <p className="text-sm font-semibold">Checked against what you confirmed (v{quote.intent_version})</p>
-              <CheckList checks={r.checks} compact />
-            </Card>
+            <VerifiedSeal
+              verified
+              passed={passed}
+              total={passed + fails.length}
+              title="Checked against what you confirmed"
+              body={`Item, size, color, stock, price, offers, budget and delivery date all match. ${passed} of ${passed + fails.length} checks passed.`}
+            />
           </div>
           <div className="space-y-4 lg:sticky lg:top-24 lg:self-start">
             <Card className="p-5">

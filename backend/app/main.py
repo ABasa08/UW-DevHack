@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import secrets
 
-from fastapi import FastAPI, Query, Request
+from fastapi import Depends, FastAPI, Header, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -18,9 +18,23 @@ from .fixtures import seed
 from .models import (AdvanceRequest, CheckoutConfirmRequest, ClaimRequest, ClarifyRequest, ConfirmIntentRequest, OutcomeRequest,
                      ParseRequest, RecommendRequest, RemedyAcceptRequest, RuleDecisionRequest, RuleToggleRequest, VerifyRequest)
 from .pricing import catalog_facets, sizes_in_order
-from .records import integrity, next_delivery_time, shipment_for
+from .records import customer_purchase, integrity, is_verified, next_delivery_time, shipment_for
 from .store import BaseStore, create_store
 from .verifier import active_rules_for
+
+
+def require_admin(authorization: str = Header(default="")) -> None:
+    """Audit data (record hashes, event chain, per-rule checks, internal IDs) needs the admin bearer token in every
+    mode, demo included. Without PERKPILOT_ADMIN_TOKEN configured, the audit routes stay closed."""
+    token = os.environ.get("PERKPILOT_ADMIN_TOKEN", "")
+    if not token:
+        raise DomainError("Audit access is disabled. Set PERKPILOT_ADMIN_TOKEN on the server to enable it.", 401, "admin_not_configured")
+    if not secrets.compare_digest(authorization.removeprefix("Bearer ").encode(), token.encode()):
+        raise DomainError("Admin authentication required.", 401, "unauthorized")
+
+
+def customer_quote(q: dict) -> dict:
+    return {k: v for k, v in q.items() if k != "quote_hash"}
 
 
 class PriceChange(BaseModel):
@@ -55,6 +69,10 @@ def create_app(store: BaseStore | None = None) -> FastAPI:
 
     def S() -> BaseStore:
         return app.state.store
+
+    def shopper_visible(p: dict) -> bool:
+        # Live mode never presents a simulated payment or shipment as a real order.
+        return demo_mode or not p["payment_method_reference"].get("simulated", True)
 
     @app.exception_handler(DomainError)
     async def _domain_error(_: Request, exc: DomainError):
@@ -114,12 +132,14 @@ def create_app(store: BaseStore | None = None) -> FastAPI:
 
     @app.post("/api/checkout/verify")
     def checkout_verify(body: VerifyRequest):
-        return shopping.verify_proposal(S(), body.intent_id, body.proposal.model_dump())
+        return customer_quote(shopping.verify_proposal(S(), body.intent_id, body.proposal.model_dump()))
 
     @app.get("/api/checkout/quotes/{quote_id}")
     def quote_get(quote_id: str):
         q = shopping.get_quote(S(), quote_id)
-        return {"quote": q, "intent": shopping.get_intent(S(), q["intent_id"]),
+        intent = shopping.get_intent(S(), q["intent_id"])
+        return {"quote": customer_quote(q),
+                "intent": {k: intent[k] for k in ("intent_id", "status", "confirmed_requirements", "confirmation_version")},
                 "product": S().get("products", q["proposal"]["product_id"]),
                 "payment_method": S().get("payment_methods", q["proposal"]["payment_method_id"])}
 
@@ -127,27 +147,45 @@ def create_app(store: BaseStore | None = None) -> FastAPI:
 
     @app.get("/api/purchases")
     def purchases(shopper_id: str = Query(...)):
-        items = S().find("purchases", {"shopper_id": shopper_id})
-        out = []
-        for p in items:
-            sh = shipment_for(S(), p["purchase_id"])
-            claims = S().find("claims", {"purchase_id": p["purchase_id"]})
-            out.append({**p, "shipment": sh, "claims": [{"claim_id": c["claim_id"], "status": c["status"],
-                                                        "classification": c["classification"]} for c in claims]})
+        s = S()
+        out = [{**customer_purchase(s, p), "claims": _claim_summaries(s, p["purchase_id"])}
+               for p in s.find("purchases", {"shopper_id": shopper_id}) if shopper_visible(p)]
         return {"purchases": sorted(out, key=lambda p: p["created_at"], reverse=True)}
 
     @app.get("/api/purchases/{purchase_id}")
-    def purchase(purchase_id: str, shopper_id: str | None = None):
+    def purchase(purchase_id: str, shopper_id: str = Query(...)):
         s = S()
         p = s.get("purchases", purchase_id)
-        if not p or (shopper_id and p["shopper_id"] != shopper_id):
+        if not p or p["shopper_id"] != shopper_id or not shopper_visible(p):
             raise DomainError("Purchase not found for this shopper.", 404, "not_found")
-        events = sorted(s.find("events", {"purchase_id": purchase_id}), key=lambda e: e["seq"])
-        claims = s.find("claims", {"purchase_id": purchase_id})
-        children = s.find("purchases", {"parent_purchase_id": purchase_id})
-        return {"purchase": p, "shipment": shipment_for(s, purchase_id), "events": events, "integrity": integrity(s, p),
-                "claims": claims, "exchange_orders": [{**c, "shipment": shipment_for(s, c["purchase_id"])} for c in children],
-                "product": s.get("products", p["product_id"]), "intent": s.get("intents", p["intent_id"]) if p.get("intent_id") else None}
+        children = [c for c in s.find("purchases", {"parent_purchase_id": purchase_id}) if shopper_visible(c)]
+        return {"purchase": customer_purchase(s, p), "claims": _claim_summaries(s, purchase_id),
+                "exchange_orders": [customer_purchase(s, c) for c in children], "product": s.get("products", p["product_id"])}
+
+    def _claim_summaries(s: BaseStore, purchase_id: str) -> list[dict]:
+        return [{k: c[k] for k in ("claim_id", "status", "classification")} for c in s.find("claims", {"purchase_id": purchase_id})]
+
+    # ------------------------------------------------------------ admin audit (bearer token in every mode)
+
+    @app.get("/api/admin/purchases", dependencies=[Depends(require_admin)])
+    def admin_purchases():
+        s = S()
+        rows = [{**{k: p.get(k) for k in ("purchase_id", "kind", "shopper_id", "product_name", "approved_charge_cents", "status",
+                                          "source", "created_at")}, "verified": is_verified(s, p)} for p in s.find("purchases")]
+        return {"purchases": sorted(rows, key=lambda p: p["created_at"], reverse=True)}
+
+    @app.get("/api/admin/purchases/{purchase_id}/audit", dependencies=[Depends(require_admin)])
+    def admin_purchase_audit(purchase_id: str):
+        s = S()
+        p = s.get("purchases", purchase_id)
+        if not p:
+            raise DomainError("Unknown purchase.", 404, "not_found")
+        return {"purchase": p, "integrity": integrity(s, p), "verified": is_verified(s, p),
+                "verification_results": p["verification_results"],
+                "events": sorted(s.find("events", {"purchase_id": purchase_id}), key=lambda e: e["seq"]),
+                "shipment": shipment_for(s, purchase_id), "claims": s.find("claims", {"purchase_id": purchase_id}),
+                "intent": s.get("intents", p["intent_id"]) if p.get("intent_id") else None,
+                "quote": s.get("quotes", p["quote_id"]) if p.get("quote_id") else None}
 
     # ------------------------------------------------------------ claims / remedies
 
@@ -240,7 +278,8 @@ def register_demo_routes(app: FastAPI, S) -> None:
 
     @app.post("/api/checkout/confirm")
     def checkout_confirm(body: CheckoutConfirmRequest):
-        return shopping.confirm_checkout(S(), body.quote_id, body.shopper_id, body.approved_charge_cents, body.shopper_approved)
+        res = shopping.confirm_checkout(S(), body.quote_id, body.shopper_id, body.approved_charge_cents, body.shopper_approved)
+        return {**res, "purchase": customer_purchase(S(), res["purchase"]) if res["purchase"] else None}
 
     @app.post("/api/remedies/{remedy_id}/accept")
     def remedy_accept(remedy_id: str, body: RemedyAcceptRequest):

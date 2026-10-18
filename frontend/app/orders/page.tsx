@@ -50,7 +50,7 @@ export default function OrdersPage() {
                   </div>
                   <p className="text-sm capitalize text-ink-mute">{o.color} · {sizeLabel(o.size)} · {o.purchase_id}</p>
                   <p className="mt-1 text-xs text-ink-mute">
-                    {o.shipment?.delivered_at ? `Delivered ${dayLabel(o.shipment.actual_delivery_date)}` : `Arrives by ${dayLabel(o.approved_delivery_date)}`}
+                    {o.shipping?.delivered_on ? `Delivered ${dayLabel(o.shipping.delivered_on)}` : `Arrives by ${dayLabel(o.approved_delivery_date)}`}
                   </p>
                 </div>
                 <div className="text-right">

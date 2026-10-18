@@ -234,7 +234,7 @@ def test_13_rule_inactive_until_approved(client, confirmed_intent):
     assert not any(c["rule"] == "LEARNED_FIT_GUIDANCE" for c in q["result"]["checks"])
 
 
-def test_14_learning_loop_changes_next_recommendation(client, confirmed_intent):
+def test_14_learning_loop_changes_next_recommendation(client, confirmed_intent, admin):
     p, out = _full_loop(client, confirmed_intent)
     ok(client.post(f"/api/merchant/rules/{out['rule_proposal']['rule_id']}/approve", json={"actor": "merchant_admin"}))
     sam = confirmed_intent("shp_sam")
@@ -248,7 +248,7 @@ def test_14_learning_loop_changes_next_recommendation(client, confirmed_intent):
     assert q["result"]["status"] == "PASS" and q["proposal"]["variant_id"] == "aerox-bla-10"
     assert any(c["rule"] == "LEARNED_FIT_GUIDANCE" and not c["blocking"] for c in q["result"]["checks"])
     # the earlier customer's confirmed order is untouched and its record still verifies
-    rec1 = ok(client.get(f"/api/purchases/{p['purchase_id']}"))
+    rec1 = ok(client.get(f"/api/admin/purchases/{p['purchase_id']}/audit", headers=admin))
     assert rec1["purchase"]["variant_id"] == "aerox-bla-10" and rec1["integrity"]["hash_matches"]
     # pausing the rule removes the guidance again
     ok(client.post(f"/api/merchant/rules/{out['rule_proposal']['rule_id']}/toggle", json={"enabled": False}))
@@ -258,7 +258,7 @@ def test_14_learning_loop_changes_next_recommendation(client, confirmed_intent):
 # -------------------------------------------------------------------------- 15-16 persistence
 
 
-def test_15_state_persists_across_restarts(tmp_path: Path):
+def test_15_state_persists_across_restarts(tmp_path: Path, admin):
     path = tmp_path / "state.json"
     c1 = TestClient(create_app(FileStore(path)))
     it = ok(c1.post("/api/intent/parse", json={"shopper_id": "shp_jordan", "text": REQUEST}))
@@ -266,9 +266,11 @@ def test_15_state_persists_across_restarts(tmp_path: Path):
     q = ok(c1.post("/api/checkout/verify", json={"intent_id": it["intent_id"], "proposal": proposal()}))
     pur = ok(c1.post("/api/checkout/confirm", json={"quote_id": q["quote_id"], "shopper_id": "shp_jordan",
                                                      "approved_charge_cents": 11000, "shopper_approved": True}))["purchase"]
+    before = ok(c1.get(f"/api/admin/purchases/{pur['purchase_id']}/audit", headers=admin))
     c2 = TestClient(create_app(FileStore(path)))  # simulates a backend restart / page refresh
-    got = ok(c2.get(f"/api/purchases/{pur['purchase_id']}"))
-    assert got["purchase"]["record_hash"] == pur["record_hash"] and got["integrity"]["event_chain_valid"]
+    got = ok(c2.get(f"/api/admin/purchases/{pur['purchase_id']}/audit", headers=admin))
+    assert got["purchase"]["record_hash"] == before["purchase"]["record_hash"] and got["integrity"]["event_chain_valid"]
+    assert ok(c2.get(f"/api/purchases/{pur['purchase_id']}", params={"shopper_id": "shp_jordan"}))["purchase"]["verification"]["verified"]
 
 
 def test_16_demo_reset_restores_seed(client, store, confirmed_intent):
@@ -284,12 +286,62 @@ def test_16_demo_reset_restores_seed(client, store, confirmed_intent):
 # -------------------------------------------------------------------------- extras
 
 
-def test_record_hash_detects_tampering(client, store, confirmed_intent):
+def test_record_hash_detects_tampering(client, store, confirmed_intent, admin):
     p = buy(client, confirmed_intent)
     doc = store.get("purchases", p["purchase_id"])
     doc["approved_charge_cents"] = 9900
     store.put("purchases", doc)
-    assert not ok(client.get(f"/api/purchases/{p['purchase_id']}"))["integrity"]["hash_matches"]
+    assert not ok(client.get(f"/api/admin/purchases/{p['purchase_id']}/audit", headers=admin))["integrity"]["hash_matches"]
+    # the shopper isn't shown the hash, but no longer sees the order as verified
+    mine = ok(client.get(f"/api/purchases/{p['purchase_id']}", params={"shopper_id": "shp_jordan"}))["purchase"]
+    assert mine["verification"]["verified"] is False
+
+
+INTERNAL = {"record_hash", "verification_results", "authorization_event_id", "simulated_transaction_id", "intent_id",
+            "confirmation_version", "full_price_breakdown", "payment_method_reference", "shopper_id"}
+
+
+def test_customer_views_hide_audit_data(client, confirmed_intent):
+    """Shoppers get order/payment/shipping status and one verified flag; hashes, checks and the event log never leave the API."""
+    p = buy(client, confirmed_intent)
+    assert not INTERNAL & set(p) and p["verification"] == {"verified": True, "checks_passed": p["verification"]["checks_total"],
+                                                          "checks_total": p["verification"]["checks_total"]}
+    assert p["verification"]["checks_total"] >= 9 and p["payment"] == {"status": "Paid", "method": "Visa Demo Card •••• 4242", "simulated": True}
+    got = ok(client.get(f"/api/purchases/{p['purchase_id']}", params={"shopper_id": "shp_jordan"}))
+    assert set(got) == {"purchase", "claims", "exchange_orders", "product"} and not INTERNAL & set(got["purchase"])
+    assert got["purchase"]["shipping"]["simulated"] and got["purchase"]["shipping"]["steps"][0]["status"] == "label_created"
+    [listed] = ok(client.get("/api/purchases", params={"shopper_id": "shp_jordan"}))["purchases"]
+    assert not INTERNAL & set(listed)
+    assert client.get(f"/api/purchases/{p['purchase_id']}").status_code == 422  # shopper required
+    deliver(client, p["purchase_id"])
+    v = ok(client.post("/api/claims", json={"purchase_id": p["purchase_id"], "shopper_id": "shp_jordan", "complaint_text": "too tight"}))
+    assert "events" not in v and v["timeline"][0]["label"] == "Issue reported" and not INTERNAL & set(v["purchase"])
+    assert "hash" not in str(v["claim"]["evidence_references"]).lower()
+    q = verify(client, confirmed_intent()["intent_id"])
+    assert "quote_hash" not in q and "quote_hash" not in ok(client.get(f"/api/checkout/quotes/{q['quote_id']}"))["quote"]
+
+
+def test_audit_routes_need_admin_token_in_every_mode(client, confirmed_intent, monkeypatch):
+    p = buy(client, confirmed_intent)
+    url = f"/api/admin/purchases/{p['purchase_id']}/audit"
+    monkeypatch.setenv("PERKPILOT_ADMIN_TOKEN", "")
+    assert client.get(url).json()["error"]["code"] == "admin_not_configured"
+    monkeypatch.setenv("PERKPILOT_ADMIN_TOKEN", "t0ken")
+    for headers in ({}, {"Authorization": "Bearer nope"}):
+        assert client.get(url, headers=headers).status_code == 401
+        assert client.get("/api/admin/purchases", headers=headers).status_code == 401
+    audit = ok(client.get(url, headers={"Authorization": "Bearer t0ken"}))
+    assert audit["integrity"]["hash_matches"] and audit["events"] and len(audit["verification_results"]) >= 9
+    assert ok(client.get("/api/admin/purchases", headers={"Authorization": "Bearer t0ken"}))["purchases"][0]["verified"]
+
+
+def test_live_mode_hides_simulated_orders(store, client, confirmed_intent, monkeypatch):
+    p = buy(client, confirmed_intent)  # a simulated demo purchase in the shared store
+    monkeypatch.setenv("PERKPILOT_MODE", "live")
+    monkeypatch.setenv("PERKPILOT_ADMIN_TOKEN", "t0ken")
+    live = TestClient(create_app(store))
+    assert ok(live.get("/api/purchases", params={"shopper_id": "shp_jordan"}))["purchases"] == []
+    assert live.get(f"/api/purchases/{p['purchase_id']}", params={"shopper_id": "shp_jordan"}).status_code == 404
 
 
 def test_shopper_isolation(client, confirmed_intent):
