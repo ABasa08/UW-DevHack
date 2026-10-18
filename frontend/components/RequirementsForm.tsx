@@ -115,9 +115,9 @@ export default function RequirementsForm({
             : "No deadline"}
         </span>
       </Field>
-      <Field label="Payment method (simulated)">
+      <Field label="How you'll pay">
         <select className={input} value={value.payment_method_id ?? ""} onChange={(e) => set({ payment_method_id: e.target.value || null })}>
-          <option value="">Default saved card</option>
+          <option value="">Default{paymentMethods[0] ? `: ${paymentMethods[0].label}` : ""}</option>
           {paymentMethods.map((p) => <option key={p.payment_method_id} value={p.payment_method_id}>{p.label}</option>)}
         </select>
       </Field>

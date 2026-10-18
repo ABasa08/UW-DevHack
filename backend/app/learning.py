@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections import Counter
 
 from .ai import draft_rule_text
-from .core import DomainError, MERCHANT_ID, append_event, next_id, now
+from .core import POLICY_ID, DomainError, MERCHANT_ID, append_event, next_id, now, shopify_mode
 from .pricing import sizes_in_order
 from .store import BaseStore
 
@@ -24,6 +24,14 @@ def group_stats(store: BaseStore, product_id: str, size: str, exclude_claim_id: 
         sh = store.find_one("shipments", {"purchase_id": p["purchase_id"]})
         if sh and sh.get("delivered_at"):
             fulfilled.append(p["purchase_id"])
+    # Fulfilled Shopify orders placed without PerkPilot also belong to the comparison group (never double-counted).
+    product = store.get("products", product_id) or {}
+    sized = {v["variant_id"] for v in product.get("variants", []) if v["size"] == size}
+    imported = 0
+    for o in store.find("shopify_orders"):
+        if o.get("perkpilot_purchase_id") or o["cancelled"] or o["fulfillment_status"] != "fulfilled":
+            continue
+        imported += sum(i["quantity"] for i in o["items"] if i.get("variant_id") in sized)
     validated, reported_only = [], []
     for c in store.find("claims", {"classification": "SUSPECTED_PRODUCT_FIT"}):
         if c["claim_id"] == exclude_claim_id:
@@ -38,16 +46,18 @@ def group_stats(store: BaseStore, product_id: str, size: str, exclude_claim_id: 
             reported_only.append(c["claim_id"])
     return {
         "product_id": product_id, "size": size,
-        "fulfilled_order_count": len(fulfilled),
+        "fulfilled_order_count": len(fulfilled) + imported,
+        "imported_shopify_orders": imported,
         "validated_outcome_count": len(validated),
         "validated_claim_ids": [c["claim_id"] for c in validated],
+        "seeded_outcome_count": sum(1 for c in validated if c.get("source") == "seed"),
         "validated_to_sizes": [c["validated_outcome"]["to_size"] for c in validated],
         "unvalidated_report_ids": reported_only,
     }
 
 
 def evaluate_group(store: BaseStore, product_id: str, size: str) -> dict | None:
-    policy = store.get("policies", "pol_stridelab")
+    policy = store.get("policies", POLICY_ID)
     th = policy["learning_thresholds"]
     stats = group_stats(store, product_id, size)
     existing = [r for r in store.find("rules", {"product_scope": product_id}) if r["variant_scope"].get("size") == size
@@ -86,7 +96,8 @@ def evaluate_group(store: BaseStore, product_id: str, size: str) -> dict | None:
             f"Small sample: {stats['validated_outcome_count']} confirmed outcomes among {stats['fulfilled_order_count']} fulfilled orders "
             f"({rate:.0%}). Not statistically validated.",
             f"{len(stats['unvalidated_report_ids'])} other tight-fit report(s) were excluded because the outcome was never confirmed.",
-            "Synthetic demo data. Indicates a possible fit pattern, not a proven product defect.",
+            (f"{stats['seeded_outcome_count']} of the confirmed outcomes are labeled synthetic sample history. " if stats["seeded_outcome_count"]
+             else "") + "Indicates a possible fit pattern, not a proven product defect.",
             "Guidance is shown to shoppers as a suggestion; their selected size is never changed automatically.",
         ],
         "thresholds": th,
@@ -98,6 +109,18 @@ def evaluate_group(store: BaseStore, product_id: str, size: str) -> dict | None:
     append_event(store, subject_type="rule", subject_id=rule_id, event_type="rule.proposed", actor_type="learning_engine",
                  payload={"product_id": product_id, "size": size, "to_size": to_size, "validated": stats["validated_outcome_count"],
                           "fulfilled": stats["fulfilled_order_count"]})
+    return rule
+
+
+def _publish(store: BaseStore, rule: dict) -> dict:
+    """Mirror approved guidance to the Shopify product page (metafield). A failed write is recorded, not raised:
+    the rule's state in PerkPilot is the source of truth and the next change retries."""
+    if not shopify_mode():
+        return rule
+    from .shopify_commerce import sync_guidance
+
+    rule["storefront_sync"] = sync_guidance(store, rule["product_scope"])
+    store.put("rules", rule)
     return rule
 
 
@@ -118,7 +141,7 @@ def approve_rule(store: BaseStore, rule_id: str, actor: str, note: str | None) -
     r["history"].append({"at": r["approval_timestamp"], "action": "approved", "actor": actor, "note": note})
     store.put("rules", r)
     append_event(store, subject_type="rule", subject_id=rule_id, event_type="rule.approved", actor_type="merchant", payload={"actor": actor})
-    return r
+    return _publish(store, r)
 
 
 def reject_rule(store: BaseStore, rule_id: str, actor: str, note: str | None) -> dict:
@@ -143,6 +166,7 @@ def toggle_rule(store: BaseStore, rule_id: str, enabled: bool, actor: str) -> di
         store.put("rules", r)
         append_event(store, subject_type="rule", subject_id=rule_id, event_type="rule.resumed" if enabled else "rule.paused",
                      actor_type="merchant", payload={"actor": actor})
+        _publish(store, r)
     return r
 
 
@@ -161,4 +185,4 @@ def rules_overview(store: BaseStore) -> dict:
             s = group_stats(store, p["product_id"], size)
             if s["validated_outcome_count"] or s["unvalidated_report_ids"]:
                 watch.append({**s, "product_name": p["name"]})
-    return {"rules": rules, "watchlist": watch, "thresholds": store.get("policies", "pol_stridelab")["learning_thresholds"]}
+    return {"rules": rules, "watchlist": watch, "thresholds": store.get("policies", POLICY_ID)["learning_thresholds"]}

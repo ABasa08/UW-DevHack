@@ -5,14 +5,15 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta
 
 from .ai import parse_complaint
-from .core import DomainError, MERCHANT_ID, append_event, fmt_cents, next_id, now
+from .core import POLICY_ID, DomainError, MERCHANT_ID, append_event, fmt_cents, merchant_name, next_id, now, shopify_mode
 from .learning import evaluate_group, group_stats
-from .pricing import estimate_delivery, find_variant, sizes_in_order
+from .pricing import estimate_delivery, find_variant, size_label, sizes_in_order, unit_price
 from .records import customer_purchase, customer_shipping, make_purchase_record, make_shipment, process_shipments, shipment_for
 from .store import BaseStore
 from .verifier import FAIL, INFO, PASS, _check
 
-ACTIVE_CLAIM_STATUSES = {"open", "needs_info", "in_review", "exchange_in_progress", "awaiting_fit_confirmation"}
+ACTIVE_CLAIM_STATUSES = {"open", "needs_info", "in_review", "exchange_in_progress", "awaiting_fit_confirmation", "awaiting_merchant"}
+MONEY_TYPES = {"refund", "partial_refund", "keep_item_partial_refund", "store_credit"}
 
 
 # ---------------------------------------------------------------- helpers
@@ -43,7 +44,10 @@ def settled_amount(store: BaseStore, purchase_id: str) -> int | None:
 
 def _variant_label(product: dict, variant_id: str) -> str:
     v = find_variant(product, variant_id)
-    return f"{v['color'].title()} / US {v['size']} ({v['sku']})" if v else variant_id
+    if not v:
+        return variant_id
+    bits = [v["color"].title() if v["color"] else None, size_label(v["size"]) if v["size"] else None]
+    return " / ".join(b for b in bits if b) + (f" ({v['sku']})" if v.get("sku") else "") or product["name"]
 
 
 # ---------------------------------------------------------------- classification
@@ -63,13 +67,14 @@ def classify(store: BaseStore, purchase: dict, issue: dict, exclude_claim_id: st
     if sh:
         if delivered:
             evidence.append({"type": "fulfillment", "ref": sh["shipment_id"], "status": "confirmed",
-                             "summary": f"Carrier record: delivered {_variant_label(product, sh['delivered_variant_id'])} on {sh['actual_delivery_date']}."})
+                             "summary": f"{'Shopify fulfillment' if purchase.get('shopify_order_id') else 'Carrier record'}: delivered {_variant_label(product, sh['delivered_variant_id'])} on {sh['actual_delivery_date']}."})
         else:
             evidence.append({"type": "fulfillment", "ref": sh["shipment_id"], "status": "confirmed",
                              "summary": f"Not delivered yet (status: {sh['status']}); expected {sh['expected_delivery_date']}."})
     if settled is not None:
+        source = "Shopify payment" if purchase.get("shopify_order_id") else "Simulated settlement"
         evidence.append({"type": "payment", "ref": purchase["simulated_transaction_id"], "status": "confirmed",
-                         "summary": f"Simulated settlement of {fmt_cents(settled)} against approved {fmt_cents(purchase['approved_charge_cents'])}."})
+                         "summary": f"{source} of {fmt_cents(settled)} against approved {fmt_cents(purchase['approved_charge_cents'])}."})
     evidence.append({"type": "customer_report", "ref": "complaint", "status": "reported",
                      "summary": f"Shopper reports: {issue['problem_type'].replace('_', ' ')}."})
 
@@ -100,7 +105,7 @@ def classify(store: BaseStore, purchase: dict, issue: dict, exclude_claim_id: st
                        f"by {fmt_cents(settled - purchase['approved_charge_cents'])}.", "merchant_billing_error",
                        extra={"mismatch_kind": "price", "overcharge_cents": settled - purchase["approved_charge_cents"],
                               "evidence_status": "confirmed_by_records"})
-        return out("NEEDS_REVIEW", "The simulated settlement matches the approved amount.",
+        return out("NEEDS_REVIEW", "The recorded payment matches the approved amount.",
                    follow_up=f"We see one charge of {fmt_cents(purchase['approved_charge_cents'])}, matching what you approved. "
                              "Can you tell us the amount and date of the charge you're seeing?",
                    extra={"evidence_status": "conflicting"})
@@ -214,11 +219,20 @@ def verify_exchange(store: BaseStore, purchase: dict, target_variant_id: str) ->
         return {"status": FAIL, "checks": checks}
     checks.append(_check("SAME_PRODUCT", "Same product", PASS, product["name"], purchase["product_name"], "Exchange keeps the same product."))
     stock = product["inventory_by_variant"].get(target_variant_id, 0)
+    if shopify_mode() and product.get("source") == "shopify":
+        from .shopify_commerce import live_stock
+        from .shopify_api import ShopifyError
+
+        try:
+            stock = live_stock([target])[target_variant_id]  # Shopify's count, not the synced projection
+        except ShopifyError:
+            pass
     checks.append(_check("STOCK", "Replacement in stock", PASS if stock >= purchase["quantity"] else FAIL, f"{stock} available",
                          f"{purchase['quantity']} needed", "Reserved on confirmation." if stock else "Out of stock."))
     paid_unit = purchase["full_price_breakdown"]["unit_price_cents"]
-    ok = product["price_cents"] <= paid_unit
-    checks.append(_check("PRICE_NEUTRAL", "No additional charge", PASS if ok else FAIL, fmt_cents(product["price_cents"]),
+    price = unit_price(product, target)
+    ok = price <= paid_unit
+    checks.append(_check("PRICE_NEUTRAL", "No additional charge", PASS if ok else FAIL, fmt_cents(price),
                          f"≤ {fmt_cents(paid_unit)} paid", "Even exchange; nothing new is charged." if ok else "Replacement costs more than the original."))
     # Store policy: replacements ship express at no cost to the shopper.
     ship = next((o for o in product["delivery_options"] if o["id"] == "express"), product["delivery_options"][0])
@@ -243,11 +257,14 @@ def generate_remedies(store: BaseStore, claim_id: str) -> list[dict]:
         return sorted(existing, key=lambda r: r["rank"])
     purchase = _purchase(store, claim["purchase_id"])
     product = store.get("products", purchase["product_id"])
-    policy = store.get("policies", "pol_stridelab")
+    policy = store.get("policies", POLICY_ID)
     a = policy["remedy_value_assumptions"]
     sh = shipment_for(store, purchase["purchase_id"])
     charge = purchase["approved_charge_cents"]
     pm_label = purchase["payment_method_reference"]["label"]
+    on_shopify = bool(purchase.get("shopify_order_id"))
+    how = ("simulated" if not on_shopify else "Shopify test refund" if purchase.get("shopify_test")
+           else "issued in Shopify once the store approves")
     cls = claim["classification"]
     issue = claim["structured_issue"]
     in_window = True
@@ -268,8 +285,8 @@ def generate_remedies(store: BaseStore, claim_id: str) -> list[dict]:
                     continue
                 ver = verify_exchange(store, purchase, v["variant_id"])
                 ok = ver["status"] == PASS
-                add("exchange", f"Exchange for {color.title()} size {size}",
-                    f"Swap for {color} US {size}. Free return label; replacement ships at no charge"
+                add("exchange", f"Exchange for {' '.join(b for b in [color.title(), 'size ' + size if size else ''] if b)}",
+                    f"Swap for {' '.join(b for b in [color, size_label(size) if size else ''] if b)}. Free return; replacement ships at no charge"
                     f" (est. {ver.get('estimated_delivery_date')}).",
                     0, a["return_label_cost_cents"] + a["outbound_shipping_cost_cents"], ok,
                     None if ok else "; ".join(c["explanation"] for c in ver["checks"] if c["status"] == FAIL),
@@ -293,32 +310,32 @@ def generate_remedies(store: BaseStore, claim_id: str) -> list[dict]:
             order.remove(issue["mentioned_size"])
             order.insert(0, issue["mentioned_size"])
         exchange_options(order[:2], [purchase["color"]], limit=2)
-        add("refund", "Return for a full refund", f"Refund {fmt_cents(charge)} to {pm_label} after the return is received (simulated).",
+        add("refund", "Return for a full refund", f"Refund {fmt_cents(charge)} to {pm_label} after the return is received ({how}).",
             charge, charge + a["return_label_cost_cents"])
-        if policy["allow_store_credit"]:
-            add("store_credit", "Store credit instead", f"{fmt_cents(charge)} StrideLab store credit, same value as the refund. Only if you prefer it.",
+        if policy["allow_store_credit"] and (not on_shopify or purchase.get("shopify_customer_id")):
+            add("store_credit", "Store credit instead", f"{fmt_cents(charge)} {merchant_name(store)} store credit, same value as the refund. Only if you prefer it.",
                 charge, charge)
     elif cls == "ORDER_MISMATCH":
         exchange_options([purchase["size"]], [purchase["color"]], limit=1, allow_same=True)
         for d in drafts:
             if d["remedy_type"] == "exchange":
                 d["title"] = "Send the item you actually ordered"
-        add("refund", "Return for a full refund", f"Refund {fmt_cents(charge)} to {pm_label} (simulated). Free return label.", charge,
+        add("refund", "Return for a full refund", f"Refund {fmt_cents(charge)} to {pm_label} ({how}). Free return label.", charge,
             charge + a["return_label_cost_cents"])
         pct = policy["keep_item_partial_refund_pct"]
         keep = round(purchase["full_price_breakdown"]["merchandise_cents"] * pct / 100)
-        add("keep_item_partial_refund", f"Keep it with a {pct}% refund", f"Keep the delivered pair and get {fmt_cents(keep)} back to {pm_label} (simulated).",
+        add("keep_item_partial_refund", f"Keep it with a {pct}% refund", f"Keep the delivered item and get {fmt_cents(keep)} back to {pm_label} ({how}).",
             keep, keep)
     elif cls == "PRICE_OR_DELIVERY_MISMATCH" and claim.get("mismatch_kind") == "price":
         over = claim.get("overcharge_cents", 0)
-        add("partial_refund", f"Refund the {fmt_cents(over)} overcharge", f"Return {fmt_cents(over)} to {pm_label} so you pay exactly what you approved (simulated).",
+        add("partial_refund", f"Refund the {fmt_cents(over)} overcharge", f"Return {fmt_cents(over)} to {pm_label} so you pay exactly what you approved ({how}).",
             over, over)
     elif cls == "PRICE_OR_DELIVERY_MISMATCH":
         ship_cost = purchase["full_price_breakdown"]["shipping_cents"]
         if ship_cost:
-            add("partial_refund", f"Refund the {fmt_cents(ship_cost)} shipping charge", f"Keep your order and get the shipping back to {pm_label} (simulated).",
+            add("partial_refund", f"Refund the {fmt_cents(ship_cost)} shipping charge", f"Keep your order and get the shipping back to {pm_label} ({how}).",
                 ship_cost, ship_cost)
-        add("refund", "Return for a full refund", f"Refund {fmt_cents(charge)} to {pm_label} after the return (simulated).", charge,
+        add("refund", "Return for a full refund", f"Refund {fmt_cents(charge)} to {pm_label} after the return ({how}).", charge,
             charge + a["return_label_cost_cents"])
     elif cls == "CUSTOMER_PREFERENCE":
         colors = [issue["mentioned_color"]] if issue.get("mentioned_color") else []
@@ -327,12 +344,12 @@ def generate_remedies(store: BaseStore, claim_id: str) -> list[dict]:
         sizes += [purchase["size"]] + [s for s in dict.fromkeys(v["size"] for v in product["variants"]) if s not in sizes and s != purchase["size"]]
         exchange_options(sizes, colors, limit=2)
         fee = policy["preference_return_fee_cents"]
-        add("refund", "Return for a refund", f"Refund {fmt_cents(charge - fee)} to {pm_label} ({fmt_cents(fee)} return-shipping fee per store policy; simulated).",
+        add("refund", "Return for a refund", f"Refund {fmt_cents(charge - fee)} to {pm_label} ({fmt_cents(fee)} return-shipping fee per store policy; {how}).",
             charge - fee, charge - fee)
-        if policy["allow_store_credit"]:
+        if policy["allow_store_credit"] and (not on_shopify or purchase.get("shopify_customer_id")):
             add("store_credit", "Store credit instead", f"{fmt_cents(charge - fee)} store credit, same value as the refund. Only if you prefer it.",
                 charge - fee, charge - fee)
-    add("manual_review", "Ask a person to review", "A StrideLab team member reviews your case and replies. Nothing is decided automatically.",
+    add("manual_review", "Ask a person to review", f"A {merchant_name(store)} team member reviews your case and replies. Nothing is decided automatically.",
         cost=5_00)
     if cls == "NEEDS_REVIEW":
         drafts = [d for d in drafts if d["remedy_type"] == "manual_review"]
@@ -381,6 +398,8 @@ def accept_remedy(store: BaseStore, remedy_id: str, shopper_id: str, confirm: bo
     product = store.get("products", purchase["product_id"])
     rtype = remedy["remedy_type"]
     execution: dict = {"idempotency_key": idempotency_key}
+    if purchase.get("shopify_order_id"):
+        return _accept_on_shopify(store, remedy, claim, purchase, execution)
 
     if rtype == "exchange":
         ver = verify_exchange(store, purchase, remedy["target_variant_id"])
@@ -432,21 +451,138 @@ def accept_remedy(store: BaseStore, remedy_id: str, shopper_id: str, confirm: bo
         claim["status"] = "in_review"
         claim["requires_review"] = True
 
-    remedy.update(status="accepted", customer_selected=True, simulated_financial_event_id=fin_id, execution=execution,
-                  accepted_at=now(store).isoformat())
-    store.put("remedies", remedy)
+    return _finalize(store, remedy, claim, purchase, fin_id, execution, simulated=True)
+
+
+def _close_alternatives(store: BaseStore, remedy: dict, claim: dict) -> None:
     for other in store.find("remedies", {"claim_id": claim["claim_id"]}):
-        if other["remedy_id"] != remedy_id and other["status"] == "eligible":
+        if other["remedy_id"] != remedy["remedy_id"] and other["status"] == "eligible":
             other["status"] = "not_selected"
             store.put("remedies", other)
-    claim["accepted_remedy_id"] = remedy_id
+
+
+def _finalize(store: BaseStore, remedy: dict, claim: dict, purchase: dict, fin_id: str | None, execution: dict, *,
+              simulated: bool, actor: str = "shopper") -> dict:
+    rtype = remedy["remedy_type"]
+    remedy.update(status="accepted", customer_selected=True, simulated_financial_event_id=fin_id, execution=execution,
+                  accepted_at=remedy.get("accepted_at") or now(store).isoformat(), executed_at=now(store).isoformat())
+    store.put("remedies", remedy)
+    _close_alternatives(store, remedy, claim)
+    claim["accepted_remedy_id"] = remedy["remedy_id"]
     claim["history"].append({"at": now(store).isoformat(), "status": claim["status"], "remedy": rtype})
     store.put("claims", claim)
     store.put("purchases", purchase)
     append_event(store, subject_type="claim", subject_id=claim["claim_id"], purchase_id=purchase["purchase_id"], event_type="remedy.executed",
-                 actor_type="shopper", payload={"remedy_id": remedy_id, "remedy_type": rtype, "simulated": True,
-                                                "amount_cents": remedy["amount_cents"], "financial_event_id": fin_id})
+                 actor_type=actor, payload={"remedy_id": remedy["remedy_id"], "remedy_type": rtype, "simulated": simulated,
+                                            "amount_cents": remedy["amount_cents"], "financial_event_id": fin_id})
     return {"duplicate": False, "remedy": remedy, "claim": claim}
+
+
+# ---------------------------------------------------------------- Shopify execution
+
+
+def _accept_on_shopify(store: BaseStore, remedy: dict, claim: dict, purchase: dict, execution: dict) -> dict:
+    """The shopper's choice is recorded at once. A test order executes in Shopify immediately; a real order's money
+    and orders wait for the merchant to approve the exact remedy in the PerkPilot admin."""
+    from .shopify_commerce import can_auto_execute
+
+    if remedy["remedy_type"] == "exchange":
+        ver = verify_exchange(store, purchase, remedy["target_variant_id"])
+        if ver["status"] != PASS:
+            raise DomainError("The replacement is no longer available: " + "; ".join(c["explanation"] for c in ver["checks"] if c["status"] == FAIL),
+                              409, "inventory_conflict", {"verification": ver})
+    if remedy["remedy_type"] != "manual_review" and not can_auto_execute(store, purchase):
+        remedy.update(status="awaiting_merchant", customer_selected=True, execution=execution, accepted_at=now(store).isoformat())
+        store.put("remedies", remedy)
+        _close_alternatives(store, remedy, claim)
+        claim.update(status="awaiting_merchant", accepted_remedy_id=remedy["remedy_id"])
+        claim["history"].append({"at": now(store).isoformat(), "status": "awaiting_merchant", "remedy": remedy["remedy_type"]})
+        store.put("claims", claim)
+        append_event(store, subject_type="claim", subject_id=claim["claim_id"], purchase_id=purchase["purchase_id"],
+                     event_type="remedy.awaiting_merchant", actor_type="shopper",
+                     payload={"remedy_id": remedy["remedy_id"], "remedy_type": remedy["remedy_type"], "amount_cents": remedy["amount_cents"]})
+        return {"duplicate": False, "remedy": remedy, "claim": claim,
+                "message": "Your choice is recorded. The store approves it in Shopify and you'll see it here once it's done."}
+    return execute_on_shopify(store, remedy, claim, purchase, execution, actor="shopper")
+
+
+def execute_on_shopify(store: BaseStore, remedy: dict, claim: dict, purchase: dict, execution: dict, actor: str) -> dict:
+    from . import shopify_commerce as sc
+    from .shopify_api import ShopifyError
+
+    rtype = remedy["remedy_type"]
+    product = store.get("products", purchase["product_id"])
+    fin_id = None
+    try:
+        if rtype == "exchange":
+            ver = verify_exchange(store, purchase, remedy["target_variant_id"])
+            if ver["status"] != PASS:
+                raise DomainError("The replacement is no longer available: " + "; ".join(c["explanation"] for c in ver["checks"] if c["status"] == FAIL),
+                                  409, "inventory_conflict", {"verification": ver})
+            target = find_variant(product, remedy["target_variant_id"])
+            ex_id = next_id(store, "pur")
+            repl = sc.create_replacement(store, purchase, target, ex_id, claim["claim_id"])
+            bd = {**purchase["full_price_breakdown"], "charge_cents": 0, "shipping_cents": 0, "tax_cents": 0, "coupon_discount_cents": 0,
+                  "merchandise_cents": 0, "later_statement_credit_cents": 0, "effective_cost_cents": 0, "note": "Even exchange: no charge.",
+                  "coupon_evaluations": [], "card_offer_evaluations": [], "shopify_totals": None}
+            ex = make_purchase_record(store, purchase_id=ex_id, shopper_id=purchase["shopper_id"], product=product, variant=target,
+                                      quantity=purchase["quantity"], breakdown=bd, payment_method_id=purchase["payment_method_reference"]["id"],
+                                      approved_delivery_date=date.fromisoformat(ver["estimated_delivery_date"]), verification_checks=ver["checks"],
+                                      simulated_transaction_id=f"Shopify order {repl['order_name']}", created_at=now(store), kind="exchange",
+                                      parent_purchase_id=purchase["purchase_id"],
+                                      payment_reference={"id": "none", "label": "No charge (exchange)", "simulated": False, "provider": "shopify"})
+            ex.update(claim_id=claim["claim_id"], shopify_order_id=repl["order_id"], shopify_order_name=repl["order_name"],
+                      shopify_test=purchase.get("shopify_test"), shopify_customer_id=purchase.get("shopify_customer_id"), shopify_observed=[])
+            store.put("purchases", ex)
+            append_event(store, subject_type="purchase", subject_id=ex_id, purchase_id=ex_id, event_type="exchange_order.created",
+                         actor_type="shopify", payload={"parent_purchase_id": purchase["purchase_id"], "variant_id": target["variant_id"],
+                                                        "shopify_order": repl["order_name"], "simulated": False})
+            ret = sc.open_return(purchase, claim)
+            sc.tag_order(purchase["shopify_order_id"], ["perkpilot-exchange"])
+            execution.update(exchange_purchase_id=ex_id, replacement_variant_id=target["variant_id"], shopify_order_name=repl["order_name"],
+                             shopify_return=ret)
+            purchase["status"] = "exchange_in_progress"
+            claim["status"] = "exchange_in_progress"
+        elif rtype in MONEY_TYPES:
+            res = sc.refund(store, purchase, remedy)
+            fin_id = res["refund_id"]
+            execution.update(amount_cents=res["amount_cents"] or remedy["amount_cents"], method="store_credit" if rtype == "store_credit" else
+                             "original_payment_method", shopify_refund_id=fin_id,
+                             settlement_note="Refunded through Shopify" + (" (test payment: no real money moved)." if purchase.get("shopify_test")
+                                                                            else ". Card refunds usually take several business days to appear."))
+            purchase["status"] = {"refund": "refunded", "store_credit": "returned_for_credit"}.get(rtype, "partially_refunded")
+            claim["status"] = "resolved"
+            append_event(store, subject_type="purchase", subject_id=purchase["purchase_id"], purchase_id=purchase["purchase_id"],
+                         event_type="refund.issued", actor_type="shopify",
+                         payload={"amount_cents": remedy["amount_cents"], "refund_id": fin_id, "simulated": False, "claim_id": claim["claim_id"],
+                                  "duplicate": res["duplicate"]})
+        else:  # manual_review
+            sc.tag_order(purchase["shopify_order_id"], ["perkpilot-review"])
+            claim["status"] = "in_review"
+            claim["requires_review"] = True
+    except ShopifyError as exc:
+        raise DomainError(f"Shopify couldn't complete this: {exc}", 502, "shopify_error")
+    out = _finalize(store, remedy, claim, purchase, fin_id, execution, simulated=False, actor=actor)
+    if rtype == "exchange":
+        try:
+            sc.reconcile_order(store, store.get("purchases", execution["exchange_purchase_id"])["shopify_order_id"])
+        except ShopifyError:
+            pass  # the replacement's status arrives with its webhook or the next view
+    return out
+
+
+def merchant_execute(store: BaseStore, remedy_id: str, actor: str) -> dict:
+    """The merchant approves a remedy the shopper chose on a real (non-test) Shopify order."""
+    remedy = store.get("remedies", remedy_id)
+    if not remedy:
+        raise DomainError("Unknown remedy.", 404, "not_found")
+    if remedy["status"] == "accepted":
+        return {"duplicate": True, "remedy": remedy, "claim": _claim(store, remedy["claim_id"])}
+    if remedy["status"] != "awaiting_merchant":
+        raise DomainError("This remedy isn't waiting for approval.", 409, "invalid_state")
+    claim = _claim(store, remedy["claim_id"])
+    purchase = _purchase(store, claim["purchase_id"])
+    return execute_on_shopify(store, remedy, claim, purchase, remedy.get("execution") or {}, actor=actor)
 
 
 def exchange_status(store: BaseStore, claim: dict) -> dict | None:
@@ -502,6 +638,7 @@ TIMELINE_LABELS = {
     "remedies.presented": "Options offered", "remedy.executed": "Option accepted",
     "refund.simulated": "Refund issued", "exchange_order.created": "Replacement order created",
     "claim.outcome_confirmed": "Outcome confirmed",
+    "remedy.awaiting_merchant": "Waiting for the store to approve", "refund.issued": "Refund issued in Shopify",
 }
 
 

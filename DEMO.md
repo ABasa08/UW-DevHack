@@ -1,62 +1,71 @@
-# PerkPilot: 4-minute judge demo script
+# PerkPilot: judge demo on your Shopify store (about 4 minutes)
 
-**Before you start:** both servers are running, and the browser is open at http://localhost:3000 on a desktop-width window. Click **Reset** in the dark demo bar. The clock should read **Tue, Oct 20, 10:00 AM PT**, and the persona should be **Jordan**.
+Everything in this script happens in the real Shopify store: the storefront theme, Shopify checkout, Shopify admin and the Shopify order timeline. Payments are Shopify **test** payments in a development store.
 
-> The demo request: *Find black running shoes in size 10, under $120 including shipping and tax, delivered by Friday.*
+## Before you record (10 minutes, once)
 
----
-
-### Scene 1: Catch the mistake (0:00–0:45)
-
-1. On the storefront, click **Use the demo request**, then **Ask the assistant**.
-2. The confirmation card shows what was understood (running shoes · black · US 10 · ≤ $120 total · by Fri Oct 23) and which interpreter ran. Click **Confirm requirements**.
-3. The agent proposal reads: STRIDE15 coupon + $10 card credit, "effective cost $100". Click **Verify before checkout →**.
-4. **Blocked before checkout.** The card-linked offer requires $120+ *after* discounts, and the charge is $110. The claimed savings are therefore unsupported.
-5. Scroll to the corrected options. **Option A** (coupon, $110, within limit) is recommended. **Option B** (no coupon, $125, $10 later credit, effective $115) fails the $120 limit.
-
-*Say:* "AI can propose, but verified rules control what reaches checkout. A future statement credit can't override the maximum charge you approved."
-
-### Scene 2: Confirm the purchase (0:45–1:20)
-
-6. Click **Use option A**. Everything passes. Review the breakdown ($110 + $8 + $7 − $15 = **$110**), "card-linked offer: not eligible", Friday delivery, and **Visa Demo Card •••• 4242 [Simulated]**.
-7. Tick the approval checkbox, then click **Place order · $110.00**.
-8. The purchase record opens. Point out "What you approved", the SHA-256 record hash, *hash matches* / *event chain intact*, and the audit trail.
-
-### Scene 3: Fix the problem (1:20–2:20)
-
-9. Click **Demo: advance clock to delivery →**. It is now Friday, and the order is delivered.
-10. Click **Report a problem**, choose the chip **These shoes feel too tight.**, then **Submit**.
-11. The resolution center shows: the delivered size matches the order (not an order error), **2 prior confirmed fit exchanges** for size 10 among 21 orders, and the classification **Suspected fit issue** (*not a proven defect*). The evidence panel separates *confirmed by records* from *reported by you*.
-12. Select **Exchange for Black size 10.5**. The replacement is re-verified (stock, same product, no extra charge). Tick the box and click **Confirm exchange**.
-13. Click **Demo: advance to replacement delivery →**, then **Fits well**. A "Learning signal created" notice appears.
-
-*Optional:* click **Re-send this confirmation (idempotency check)**. It reports "Already processed. No second refund or exchange was issued."
-
-### Scene 4: Turn the return into learning (2:20–3:05)
-
-14. Click **Open merchant rule review →** (or Merchant console → Rule review).
-15. Walk through the card: **3 confirmed outcomes**, **21 fulfilled orders**, **14%**, the shopper-facing wording, the evidence (two seeded and one *this session*), and the limitations (small sample; one unconfirmed report excluded; not a defect).
-16. Click **Approve guidance**.
-
-### Scene 5: Prevent the next mistake (3:05–3:45)
-
-17. Click **← Storefront**, switch **Shopping as → Sam**, then repeat the demo request and confirm it.
-18. The guidance banner appears: *"Some customers reported a tight fit in size 10. Would you like to review size 10.5?"*
-19. Toggle **Merchant-approved learned guidance** off: the banner disappears (baseline). Toggle it on again.
-20. Click **Review size 10.5**. The requirements become v2 (US 10.5) with an audited reason, and nothing changes without Sam's choice.
-
-### Scene 6: Close with the dashboard (3:45–4:00)
-
-21. Open **Merchant console**. It shows proposals blocked, verified orders, the completed exchange, rules approved 1/1, and live activity.
-
-> "PerkPilot doesn't just help customers buy. It remembers what they approved, helps fix what went wrong, and makes the next purchase more reliable."
+1. Backend in Shopify mode, the app running, and the tunnel up (see README → *Run it against your Shopify store*). Open the tunnel URL once in Chrome and click **Visit Site**.
+2. In Shopify admin, open **Apps → PerkPilot → Setup**:
+   - **Connect store** (or **Sync now**).
+   - **Prepare the judge demo:** choose the product (e.g. your hoodie) and the variant the shopper will ask for (e.g. Black / M), then **Prepare scenario**. Copy the shopper request it gives you, for example *"Find a black hoodie in size M under $65 including shipping and tax, delivered by Thursday."*
+   - **Fit-learning history:** choose the next size up (e.g. L) and **Load sample history**. That adds 20 delivered size-M orders and 2 confirmed exchanges, all labeled as sample data.
+   - Check that the **PerkPilot assistant** app embed is on and the **PerkPilot fit guidance** block is on the product template (the links are right there).
+3. Make sure the variant you'll exchange to (e.g. L) has stock, and the payment provider is in test mode.
+4. Open three tabs: the storefront product page, Shopify admin → **Apps → PerkPilot**, and Shopify admin → **Orders**.
 
 ---
 
-### Backup paths
+### Scene 1: Catch the mistake (0:00–0:45) · storefront
 
-- **Model or network down:** the app runs entirely on the deterministic fallback interpreter (shown in the demo bar). Nothing in the core flow depends on an external service.
-- **Something went sideways:** click **Reset** and replay. All IDs are deterministic (`pur_0001`, `clm_0001`, `rule_0001`, …).
-- **Extra scenarios:** switch to **Riley** → Orders for seeded edge cases: wrong color delivered → *Order mismatch*; overcharged → *Price mismatch* (refund of the $15 difference); late delivery → *Delivery mismatch*; "I changed my mind" → *Customer preference*; "This isn't what I expected" → a follow-up question, with no guessing.
-- **Changed amount after approval:** in Merchant console → Scenario tools, set the AeroRunner price to $114 *after* a shopper reaches the approve step. Placing the order then returns *NEEDS_RECONFIRMATION* with the new quote. Click **Restore $110** afterward.
-- **Evaluation:** Merchant console → Evaluation → **Run evaluation** (52/52 scenarios on synthetic fixtures).
+1. On the product page, click **Shopping assistant** (bottom right).
+2. Paste the shopper request and click **Understand my request**. The confirmation card shows what was understood (hoodie · black · M · ≤ $65 total · by Thursday) and which interpreter ran. Click **Confirm requirements**.
+3. The **Shopping agent proposal** stacks the discount code with the Visa card-linked credit and claims a lower effective cost. Click **Verify before checkout →**.
+4. **Blocked before checkout.** With the code, Shopify's total is below the card offer's threshold, so the claimed credit doesn't exist and the savings are unsupported.
+5. The corrected options: **Option A** (code, within budget) is recommended; **Option B** (no code) qualifies for the credit but is over the shopper's maximum.
+
+*Say:* "AI can propose, but verified rules control what reaches checkout. The tax and total here come from Shopify itself, and a future statement credit can't override the maximum charge the shopper approved."
+
+### Scene 2: Confirm the purchase (0:45–1:20) · storefront → Shopify checkout
+
+6. Click **Use option A**. All checks pass, including **Shopify agrees on the total**. The breakdown shows *Tax (calculated by Shopify)*.
+7. Tick the approval box and click **Approve $X and continue**. PerkPilot re-verifies, creates the Shopify draft order, and Shopify must total it to the cent.
+8. Click **Pay $X on [store]'s checkout →**. Shopify's own checkout opens with exactly that item, code and shipping. Pay with the test card `4242 4242 4242 4242`.
+9. Back on the store, open the assistant → **My orders**. The order shows **Paid · Visa •••• 4242 (Shopify test payment)** and **Verified purchase** (the order total matches the approval).
+
+*Say:* "PerkPilot never touched the card. Shopify took the payment, and PerkPilot built the purchase record from the paid Shopify order."
+
+### Scene 3: Fix the problem (1:20–2:20) · admin → storefront
+
+10. In **Apps → PerkPilot → Orders**, open the order and click **Ship & mark delivered (test order)**. That creates the Shopify fulfillment and a DELIVERED event, the same events a carrier would post. (Or fulfil it in Shopify's Orders tab.)
+11. In the storefront assistant, open the order → **Report a problem** → *"This feels too tight."* → **Submit**.
+12. The resolution center shows: Shopify's fulfillment record shows size M was delivered, so it isn't an order error; there are **2 prior confirmed fit exchanges** for size M among 21 fulfilled orders; so it's a **Suspected fit issue**, not a proven defect.
+13. Choose **Exchange for Black size L** (re-verified against Shopify's live stock and price), tick the box, and click **Confirm exchange**. A free replacement order is created in Shopify, and a return is opened for the original. Show it in the **Orders** tab, tagged `perkpilot-exchange`.
+14. Ship and deliver the replacement (step 10 again, on the replacement order), then click **Fits well** in the assistant.
+
+### Scene 4: Turn the return into learning (2:20–3:05) · Shopify admin
+
+15. **Apps → PerkPilot → Rule review**: **3 confirmed outcomes** among **21 fulfilled orders** (14%), the evidence (two labeled sample, one live order), the limitations, and the exact wording shoppers will see.
+16. Click **Approve guidance**. The card shows *Published to the Shopify product page*.
+
+*Say:* "Confirmed outcomes create a controlled improvement that a person approved. It's not unexplained AI behavior."
+
+### Scene 5: Prevent the next mistake (3:05–3:45) · storefront
+
+17. Reload the product page and select size M. The **Fit guidance** block shows *"Some customers reported a tight fit in size M. Would you like to review size L?"* with the evidence. Nothing changes until the shopper clicks **Switch to size L**.
+18. Open the assistant in a private window (a new shopper) and send the same request. The recommendation carries the same guidance, and **Review size L** re-verifies with size L.
+19. To show the counterfactual, **Pause rule** in Rule review and reload: the guidance disappears from both. Resume it.
+
+### Scene 6: Close with the dashboard (3:45–4:00) · Shopify admin
+
+20. **Apps → PerkPilot → Dashboard**: the blocked checkout mistake, the verified Shopify order, the exchange, the approved rule, and the live Shopify order feed.
+
+*Close:* "PerkPilot doesn't just help customers buy. It remembers what they approved, helps fix what went wrong, and makes the next purchase more reliable, all inside the merchant's Shopify store."
+
+---
+
+## If something goes wrong
+
+- **The assistant shows a warning page:** open the tunnel URL in a tab and click **Visit Site** (free ngrok domains).
+- **The order doesn't appear after paying:** the assistant polls Shopify directly, so wait a few seconds. In the admin, **Orders → (order) → Refresh from Shopify** re-reads it.
+- **The scenario button fails:** the app needs the `write_draft_orders` and `write_discounts` scopes. Redeploy `shopify.app.toml` and approve the update in Shopify admin.
+- **Replay:** run **Prepare scenario** again (it reuses the discount code). Each new purchase is a new Shopify test order.

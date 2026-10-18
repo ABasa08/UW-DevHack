@@ -1,0 +1,42 @@
+{% comment %}
+  PerkPilot fit guidance (app block for product pages). Shows the merchant-approved size guidance for the selected
+  size, written to this product's metafield perkpilot.fit_guidance when the merchant approves a rule in PerkPilot.
+  Nothing renders when the product has no approved guidance. The shopper's selection only changes if they choose.
+{% endcomment %}
+{%- assign fit_guidance = product.metafields.perkpilot.fit_guidance.value -%}
+<div class="perkpilot-fit" data-perkpilot-fit hidden
+  data-product-id="{{ product.id }}"
+  data-product-title="{{ product.title | escape }}"
+  data-app-url="{{ block.settings.app_url | strip }}"
+  data-size-option="{{ block.settings.size_option | escape }}">
+  <script type="application/json" data-perkpilot-guidance>{{ fit_guidance | json }}</script>
+  <script type="application/json" data-perkpilot-options>{{ product.options | json }}</script>
+  <script type="application/json" data-perkpilot-variants>[{% for v in product.variants %}{"id":{{ v.id }},"available":{{ v.available | json }},"options":{{ v.options | json }}}{% unless forloop.last %},{% endunless %}{% endfor %}]</script>
+  <p class="perkpilot-fit__title">Fit guidance from {{ shop.name | escape }}</p>
+  <p class="perkpilot-fit__message"></p>
+  <p class="perkpilot-fit__evidence"></p>
+  <div class="perkpilot-fit__actions">
+    <button type="button" class="perkpilot-fit__switch" hidden></button>
+    <button type="button" class="perkpilot-fit__ask">Ask the shopping assistant</button>
+  </div>
+</div>
+
+{% schema %}
+{
+  "name": "PerkPilot fit guidance",
+  "target": "section",
+  "enabled_on": { "templates": ["product"] },
+  "javascript": "perkpilot.js",
+  "stylesheet": "perkpilot.css",
+  "settings": [
+    {
+      "type": "text",
+      "id": "app_url",
+      "label": "PerkPilot app URL",
+      "default": "https://variably-dinner-doornail.ngrok-free.dev",
+      "info": "Optional. When set, guidance refreshes live; otherwise it's read from the product metafield."
+    },
+    { "type": "text", "id": "size_option", "label": "Size option name", "default": "Size" }
+  ]
+}
+{% endschema %}

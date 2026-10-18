@@ -38,6 +38,7 @@ COLLECTIONS = [
     "policies",
     "shopify_orders",
     "shopify_events",
+    "handoffs",
 ]
 
 
@@ -197,7 +198,7 @@ class MongoStore(BaseStore):
             self.db[c].delete_many({})
 
 
-def create_store(live: bool = False) -> BaseStore:
+def create_store(live: bool = False, filename: str = "demo_state.json") -> BaseStore:
     """Live mode fails closed: never fork real commerce state into a local snapshot."""
     uri = os.environ.get("MONGODB_URI", "").strip()
     if live and not uri:
@@ -210,4 +211,4 @@ def create_store(live: bool = False) -> BaseStore:
                 raise
             print(f"[perkpilot] MongoDB unavailable ({exc}); using local file store fallback.")
     data_dir = Path(os.environ.get("PERKPILOT_DATA_DIR", Path(__file__).resolve().parent.parent / "data"))
-    return FileStore(data_dir / "demo_state.json")
+    return FileStore(data_dir / filename)

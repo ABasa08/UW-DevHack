@@ -126,7 +126,18 @@ def verify(store: BaseStore, req: dict, proposal: dict, shopper_id: str, *, appl
                              "Unknown shipping option."))
         ship = product["delivery_options"][0]
     bd = price_cart(store, product, qty, ship["id"], proposal.get("coupon_codes", []), proposal.get("card_offer_ids", []),
-                    proposal["payment_method_id"])
+                    proposal["payment_method_id"], proposal["variant_id"] if variant else None)
+    if bd["tax_source"] == "unavailable":
+        checks.append(_check("TOTAL_UNKNOWN", "Total charge known", FAIL, "Shopify couldn't calculate tax for this cart",
+                             "a total calculated by Shopify", "PerkPilot won't approve a charge it can't verify. Try again shortly."))
+    elif bd["shopify_totals"]:
+        st = bd["shopify_totals"]
+        ok = st["total_cents"] == bd["charge_cents"] and st["discount_cents"] == bd["coupon_discount_cents"]
+        checks.append(_check("SHOPIFY_TOTAL_MATCH", "Shopify agrees on the total", PASS if ok else FAIL, fmt_cents(st["total_cents"]) + " from Shopify",
+                             fmt_cents(bd["charge_cents"]) + " verified",
+                             "Shopify calculated the same total for this exact cart, including tax and the discount code." if ok else
+                             f"Shopify applied {fmt_cents(st['discount_cents'])} in discounts and totals {fmt_cents(st['total_cents'])}; "
+                             "PerkPilot won't hand off a cart whose total it can't reproduce."))
     for ev in bd["coupon_evaluations"]:
         rule = ev.get("rule") or "COUPON_ELIGIBILITY"
         checks.append(_check(rule, f"Coupon {ev['code']}", PASS if ev["eligible"] else FAIL,
@@ -224,7 +235,7 @@ def candidate_proposals(store: BaseStore, req: dict, product: dict, payment_meth
     out = []
     for ship, coupon in cartesian(product["delivery_options"], [None, *coupons]):
         codes = [coupon] if coupon else []
-        bd = price_cart(store, product, qty, ship["id"], codes, card_offers, payment_method_id)
+        bd = price_cart(store, product, qty, ship["id"], codes, card_offers, payment_method_id, variant["variant_id"])
         if coupon and not bd["coupon_evaluations"][0]["eligible"]:
             continue
         eligible_cards = [ev["offer_id"] for ev in bd["card_offer_evaluations"] if ev["eligible"]]
@@ -239,7 +250,7 @@ def _option_summary(store, prop: dict, res: dict, req: dict) -> dict:
     card_info = next(iter(bd["card_offer_evaluations"]), None)
     all_cards = price_cart(store, store.get("products", prop["product_id"]), prop["quantity"], prop["shipping_option"],
                            prop["coupon_codes"], [o["offer_id"] for o in store.find("offers", {"offer_type": "card_linked_statement_credit"})],
-                           prop["payment_method_id"])["card_offer_evaluations"]
+                           prop["payment_method_id"], prop["variant_id"])["card_offer_evaluations"]
     card_info = all_cards[0] if all_cards else card_info
     fails = [c for c in res["checks"] if c["status"] == FAIL]
     return {
@@ -260,7 +271,7 @@ def _option_summary(store, prop: dict, res: dict, req: dict) -> dict:
 
 
 def build_options(store: BaseStore, req: dict, product: dict, shopper_id: str, base: dict, apply_learned_rules: bool) -> list[dict]:
-    pm = base.get("payment_method_id") or "pm_visa_4242"
+    pm = base.get("payment_method_id") or ("pm_shopify_visa" if product.get("source") == "shopify" else "pm_visa_4242")
     evaluated = []
     for prop in candidate_proposals(store, req, product, pm):
         res = verify(store, req, prop, shopper_id, apply_learned_rules=apply_learned_rules, with_options=False)
@@ -297,12 +308,12 @@ def naive_agent_proposal(store: BaseStore, req: dict, product: dict, payment_met
     qty = req.get("quantity", 1)
     best = None
     for o in store.find("offers", {"offer_type": "coupon"}):
-        bd = price_cart(store, product, qty, ship["id"], [o["code"]], [], payment_method_id)
+        bd = price_cart(store, product, qty, ship["id"], [o["code"]], [], payment_method_id, variant["variant_id"])
         ev = bd["coupon_evaluations"][0]
         if ev["eligible"] and (best is None or ev["discount_cents"] > best[1]):
             best = (o["code"], ev["discount_cents"])
     codes = [best[0]] if best else []
-    bd = price_cart(store, product, qty, ship["id"], codes, [], payment_method_id)
+    bd = price_cart(store, product, qty, ship["id"], codes, [], payment_method_id, variant["variant_id"])
     claimed_cards, credit = [], 0
     for o in store.find("offers", {"offer_type": "card_linked_statement_credit"}):
         if payment_method_id in o["applicable_payment_methods"] and bd["pre_discount_total_cents"] >= o["minimum_spend_cents"]:

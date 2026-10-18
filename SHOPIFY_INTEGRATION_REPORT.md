@@ -1,5 +1,7 @@
 # PerkPilot: modular Shopify integration report
 
+> **Status (Oct 18):** implemented as `PERKPILOT_MODE=shopify`: theme app extension, app proxy sessions, embedded admin with session tokens, Shopify-calculated totals, draft-order checkout, order reconciliation, Shopify refunds/returns/replacement orders, and metafield-published guidance. See the README. This report is kept as the design review it was built from.
+
 Repository review and platform research: October 17, 2026.
 
 **Recommendation:** turn PerkPilot into an installable Shopify app with a theme extension for shoppers, an authenticated merchant console, and a Shopify adapter behind the existing Python domain logic. Shopify should own catalog availability, cart, checkout, payments, orders, and operational returns. PerkPilot should own confirmed shopping requirements, verification explanations, evidence records, claims orchestration, and merchant-approved learning.

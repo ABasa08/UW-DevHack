@@ -1,0 +1,12 @@
+{
+  "name": "perkpilot-shopify-app",
+  "private": true,
+  "description": "Shopify CLI workspace for PerkPilot: app config (shopify.app.toml) and the theme app extension.",
+  "scripts": {
+    "deploy": "shopify app deploy",
+    "info": "shopify app info"
+  },
+  "devDependencies": {
+    "@shopify/cli": "4.8.3"
+  }
+}

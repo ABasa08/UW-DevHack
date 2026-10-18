@@ -42,5 +42,5 @@ for _ in $(seq 1 30); do
   if ! kill -0 "$BACK" 2>/dev/null; then echo "Backend failed to start; see the error above."; exit 1; fi
   sleep 1
 done
-echo "Backend ready on http://localhost:8000 — starting frontend on http://localhost:3000"
+echo "Backend ready on http://localhost:8000 — starting the app on http://localhost:3000 (merchant console: /app, shopper assistant: /embed)"
 npm --prefix "$ROOT/frontend" run dev

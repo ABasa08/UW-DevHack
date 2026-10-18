@@ -9,6 +9,10 @@ Fixture-defined order of operations (documented in README):
   5. final charge         = merchandise + shipping + tax - coupons
   6. card-linked offers   = evaluated against their declared price basis. They are
                             *later statement credits* and never reduce the charge.
+
+Shopify products (PERKPILOT_MODE=shopify) price per variant, use the merchant's shipping options, and take tax
+from Shopify's own calculation of the exact cart (draftOrderCalculate, with the real discount code applied).
+If Shopify can't be asked, tax is unknown and the verifier fails closed.
 """
 
 from __future__ import annotations
@@ -120,7 +124,8 @@ def evaluate_coupon(store: BaseStore, code: str, product: dict, merchandise_cent
             "reason": f"{code.upper()} needs {fmt_cents(offer['minimum_spend_cents'])} merchandise spend; cart has {fmt_cents(merchandise_cents)}.",
             "discount_cents": 0,
         }
-    discount = min(offer["amount_cents"], merchandise_cents)
+    discount = min(offer["amount_cents"] if not offer.get("percentage") else round(merchandise_cents * offer["percentage"] / 100),
+                   merchandise_cents)
     return {**res, "eligible": True, "reason": f"{offer['label']} applies.", "discount_cents": discount}
 
 
@@ -156,10 +161,13 @@ def evaluate_card_offer(store: BaseStore, offer_id: str, payment_method_id: str,
 
 
 def price_cart(store: BaseStore, product: dict, quantity: int, shipping_option: str, coupon_codes: list[str],
-               card_offer_ids: list[str], payment_method_id: str) -> dict:
+               card_offer_ids: list[str], payment_method_id: str, variant_id: str | None = None) -> dict:
     ship = find_shipping(product, shipping_option)
-    merchandise = product["price_cents"] * quantity
-    tax = product["demo_tax_cents"] * quantity
+    variant = find_variant(product, variant_id) if variant_id else None
+    unit = unit_price(product, variant)
+    merchandise = unit * quantity
+    platform = product.get("source") == "shopify"
+    tax = 0 if platform else product["demo_tax_cents"] * quantity
     shipping = ship["price_cents"] if ship else 0
     coupon_evals = [evaluate_coupon(store, c, product, merchandise) for c in coupon_codes]
 
@@ -175,6 +183,13 @@ def price_cart(store: BaseStore, product: dict, quantity: int, shipping_option: 
         seen_groups.add(g)
 
     discount = min(sum(ev["discount_cents"] for ev in coupon_evals), merchandise)
+    shopify_totals = None
+    if platform and ship and variant:
+        from .shopify_commerce import calculate
+
+        shopify_totals = calculate(variant, quantity, ship, [ev["code"] for ev in coupon_evals if ev["eligible"]])
+        if shopify_totals:
+            tax = shopify_totals["tax_cents"]
     charge = merchandise + shipping + tax - discount
     basis = {
         "final_charge": charge,
@@ -185,7 +200,7 @@ def price_cart(store: BaseStore, product: dict, quantity: int, shipping_option: 
     credits = sum(ev["credit_cents"] for ev in card_evals)
     return {
         "currency": "USD",
-        "unit_price_cents": product["price_cents"],
+        "unit_price_cents": unit,
         "quantity": quantity,
         "merchandise_cents": merchandise,
         "shipping_cents": shipping,
@@ -199,4 +214,6 @@ def price_cart(store: BaseStore, product: dict, quantity: int, shipping_option: 
         "effective_cost_cents": charge - credits,
         "coupon_evaluations": coupon_evals,
         "card_offer_evaluations": card_evals,
+        "tax_source": ("shopify" if shopify_totals else "unavailable") if platform else "demo_fixture",
+        "shopify_totals": shopify_totals,
     }

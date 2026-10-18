@@ -1,30 +1,16 @@
 {% comment %}
-  PerkPilot shopping assistant: floating button + panel for any Shopify Online Store theme.
-  Install: Online Store > Themes > Customize > Footer > Add section > "Custom Liquid", paste this file,
-  and set the URL below to your deployed PerkPilot frontend (no trailing slash).
+  Manual install of the PerkPilot assistant, for stores that don't use the theme app extension
+  (the extension is the recommended path: Online Store > Themes > Customize > App embeds > PerkPilot assistant).
+  Install: Online Store > Themes > Customize > Footer > Add section > "Custom Liquid", paste this file, and set the
+  URL below to your PerkPilot app (no trailing slash). It loads the same script the extension uses.
 {% endcomment %}
-{%- assign perkpilot_url = "https://YOUR-PERKPILOT-FRONTEND" -%}
-
-<button id="perkpilot-open" type="button" aria-controls="perkpilot-panel" aria-expanded="false"
-  style="position:fixed;right:20px;bottom:20px;z-index:2147483000;padding:12px 18px;border:0;border-radius:999px;background:#111;color:#fff;font:600 15px/1 system-ui,sans-serif;box-shadow:0 6px 20px rgba(0,0,0,.25);cursor:pointer">
-  Shopping assistant
-</button>
-<div id="perkpilot-panel" role="dialog" aria-label="PerkPilot shopping assistant" hidden
-  style="position:fixed;right:20px;bottom:80px;z-index:2147483000;width:min(440px,calc(100vw - 40px));height:min(720px,calc(100vh - 120px));border-radius:16px;overflow:hidden;box-shadow:0 12px 40px rgba(0,0,0,.3);background:#fff">
-  <iframe title="PerkPilot shopping assistant" src="about:blank" data-src="{{ perkpilot_url }}/embed"
-    style="width:100%;height:100%;border:0"></iframe>
-</div>
-<script>
-  (function () {
-    var btn = document.getElementById("perkpilot-open"), panel = document.getElementById("perkpilot-panel");
-    var frame = panel.querySelector("iframe");
-    btn.addEventListener("click", function () {
-      if (frame.src === "about:blank") frame.src = frame.dataset.src; // load lazily on first open
-      panel.hidden = !panel.hidden;
-      btn.setAttribute("aria-expanded", String(!panel.hidden));
-    });
-    document.addEventListener("keydown", function (e) {
-      if (e.key === "Escape" && !panel.hidden) { panel.hidden = true; btn.setAttribute("aria-expanded", "false"); btn.focus(); }
-    });
-  })();
-</script>
+{%- assign perkpilot_url = "https://YOUR-PERKPILOT-APP" -%}
+<div id="perkpilot-root" hidden
+  data-app-url="{{ perkpilot_url }}"
+  data-shop="{{ shop.permanent_domain }}"
+  data-store-name="{{ shop.name | escape }}"
+  data-label="Shopping assistant"
+  data-signed-in="{% if customer %}1{% endif %}"
+  {% if product %}data-product-id="{{ product.id }}" data-product-title="{{ product.title | escape }}"{% endif %}></div>
+<link rel="stylesheet" href="{{ perkpilot_url }}/perkpilot-embed.css">
+<script src="{{ perkpilot_url }}/perkpilot-embed.js" defer></script>

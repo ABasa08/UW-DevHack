@@ -1,0 +1,38 @@
+/* PerkPilot storefront styles. Every class is prefixed so the theme's own styles are untouched. */
+.perkpilot-launcher {
+  position: fixed; right: 20px; bottom: 20px; z-index: 2147483000;
+  padding: 12px 18px; border: 0; border-radius: 999px; background: #111; color: #fff;
+  font: 600 15px/1 system-ui, -apple-system, "Segoe UI", sans-serif; letter-spacing: 0.01em;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25); cursor: pointer;
+}
+.perkpilot-launcher:focus-visible { outline: 3px solid #4c8dff; outline-offset: 3px; }
+.perkpilot-panel {
+  position: fixed; right: 20px; bottom: 80px; z-index: 2147483000;
+  width: min(460px, calc(100vw - 40px)); height: min(760px, calc(100vh - 120px));
+  border-radius: 16px; overflow: hidden; background: #fff; box-shadow: 0 12px 40px rgba(0, 0, 0, 0.3);
+}
+.perkpilot-panel[hidden] { display: none; }
+.perkpilot-frame { width: 100%; height: 100%; border: 0; display: block; }
+.perkpilot-close {
+  position: absolute; top: 8px; right: 10px; z-index: 1; width: 32px; height: 32px; border: 0; border-radius: 50%;
+  background: rgba(0, 0, 0, 0.06); color: #111; font: 22px/32px system-ui, sans-serif; cursor: pointer;
+}
+@media (max-width: 600px) {
+  .perkpilot-panel { inset: 0; width: 100vw; height: 100dvh; border-radius: 0; }
+}
+
+.perkpilot-fit {
+  margin: 16px 0; padding: 14px 16px; border-radius: 12px; border: 1px solid rgba(180, 120, 20, 0.35);
+  background: #fff8ea; color: #2b2312; font-family: inherit;
+}
+.perkpilot-fit[hidden] { display: none; }
+.perkpilot-fit__title { margin: 0; font-weight: 600; font-size: 0.85em; text-transform: uppercase; letter-spacing: 0.06em; color: #8a5a00; }
+.perkpilot-fit__message { margin: 6px 0 0; font-size: 1em; }
+.perkpilot-fit__evidence { margin: 4px 0 0; font-size: 0.82em; opacity: 0.75; }
+.perkpilot-fit__actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.perkpilot-fit__actions button {
+  padding: 8px 12px; border-radius: 8px; border: 1px solid currentColor; background: transparent; color: inherit;
+  font: inherit; font-size: 0.9em; cursor: pointer;
+}
+.perkpilot-fit__actions .perkpilot-fit__switch { background: #2b2312; color: #fff; border-color: #2b2312; }
+.perkpilot-fit__actions button[hidden] { display: none; }

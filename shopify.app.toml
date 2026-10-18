@@ -1,0 +1,45 @@
+# PerkPilot as a Shopify app. Deploy with Shopify CLI from this folder:  npx shopify app deploy
+# 1. Set client_id to your app's Client ID (Dev Dashboard -> your app -> Settings).
+# 2. Replace the tunnel host below if your public URL isn't this ngrok domain (keep the paths).
+name = "PerkPilot"
+client_id = "REPLACE_WITH_YOUR_CLIENT_ID"
+application_url = "https://variably-dinner-doornail.ngrok-free.dev/app"
+embedded = true
+
+[build]
+include_config_on_deploy = true
+
+[access_scopes]
+# Catalog + inventory (read), product metafields for approved fit guidance (write), orders/refunds/tags (write),
+# draft orders for Shopify-calculated totals and the verified checkout, discount codes, fulfillment + returns.
+scopes = "read_products,write_products,read_inventory,read_orders,write_orders,write_draft_orders,read_discounts,write_discounts,read_fulfillments,write_fulfillments,read_merchant_managed_fulfillment_orders,write_merchant_managed_fulfillment_orders,read_returns,write_returns"
+
+[auth]
+redirect_urls = ["https://variably-dinner-doornail.ngrok-free.dev/api/auth/callback"]
+
+[webhooks]
+api_version = "2026-10"
+
+  [[webhooks.subscriptions]]
+  topics = [
+    "app/uninstalled",
+    "products/create", "products/update", "products/delete", "inventory_levels/update",
+    "orders/create", "orders/updated", "refunds/create",
+    "fulfillments/create", "fulfillments/update", "fulfillment_events/create",
+    "discounts/create", "discounts/update", "discounts/delete"
+  ]
+  uri = "https://variably-dinner-doornail.ngrok-free.dev/api/shopify/webhooks"
+
+  [[webhooks.subscriptions]]
+  compliance_topics = ["customers/data_request", "customers/redact", "shop/redact"]
+  uri = "https://variably-dinner-doornail.ngrok-free.dev/api/shopify/webhooks"
+
+# Storefront requests to https://<store>/apps/perkpilot/* are signed by Shopify and forwarded here.
+# /apps/perkpilot/session is how a signed-in customer's identity reaches PerkPilot.
+[app_proxy]
+url = "https://variably-dinner-doornail.ngrok-free.dev/api/proxy"
+subpath = "perkpilot"
+prefix = "apps"
+
+[pos]
+embedded = false

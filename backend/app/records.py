@@ -39,6 +39,7 @@ def make_purchase_record(
     kind: str = "order",
     parent_purchase_id: str | None = None,
     source: str = "live",
+    payment_reference: dict | None = None,
 ) -> dict:
     pm = store.get("payment_methods", payment_method_id)
     record = {
@@ -61,7 +62,8 @@ def make_purchase_record(
         "size": variant["size"],
         "quantity": quantity,
         "full_price_breakdown": breakdown,
-        "payment_method_reference": {"id": payment_method_id, "label": pm["label"] if pm else payment_method_id, "simulated": True},
+        "payment_method_reference": payment_reference or {"id": payment_method_id, "label": pm["label"] if pm else payment_method_id,
+                                                          "simulated": True},
         "approved_charge_cents": breakdown["charge_cents"],
         "currency": "USD",
         "approved_delivery_date": approved_delivery_date.isoformat(),
@@ -96,7 +98,7 @@ def is_verified(store: BaseStore, record: dict) -> bool:
 PAYMENT_STATUS = {"refunded": "Refunded", "partially_refunded": "Partially refunded", "returned_for_credit": "Refunded as store credit"}
 CUSTOMER_FIELDS = ("purchase_id", "kind", "parent_purchase_id", "status", "source", "created_at", "product_id", "product_name",
                    "color", "size", "quantity", "approved_charge_cents", "currency", "approved_delivery_date",
-                   "confirmed_requirements", "original_request")
+                   "confirmed_requirements", "original_request", "shopify_order_name", "shopify_test")
 PRICE_FIELDS = ("unit_price_cents", "quantity", "merchandise_cents", "shipping_cents", "shipping_label", "tax_cents",
                 "coupon_discount_cents", "charge_cents", "later_statement_credit_cents")
 
@@ -108,7 +110,8 @@ def customer_shipping(store: BaseStore, purchase_id: str) -> dict | None:
         return None
     done = {e["status"]: e["at"] for e in sh["events"]}
     return {
-        "status": sh["status"], "carrier": sh["carrier_fixture"], "simulated": True,
+        "status": sh["status"], "carrier": sh["carrier_fixture"], "simulated": sh.get("simulated", True),
+        "tracking_number": sh.get("tracking_number"), "tracking_url": sh.get("tracking_url"),
         "expected_delivery_date": sh["expected_delivery_date"], "delivered_on": sh["actual_delivery_date"],
         "steps": [{"status": s["status"], "at": done.get(s["status"], s["at"]), "done": s["status"] in done}
                   for s in sh["planned"] if s["status"] != "delayed" or "delayed" in done],
@@ -192,7 +195,8 @@ def process_shipments(store: BaseStore, source: str = "live") -> list[dict]:
     changed = []
     for sh in store.find("shipments"):
         applied = {e["status"] for e in sh["events"]}
-        new = [p for p in sh["planned"] if p["status"] not in applied and datetime.fromisoformat(p["at"]) <= current]
+        # Shopify-backed shipments have no planned times: their events come from Shopify fulfillments.
+        new = [p for p in sh["planned"] if p["at"] and p["status"] not in applied and datetime.fromisoformat(p["at"]) <= current]
         if not new:
             continue
         for p in sorted(new, key=lambda p: p["at"]):
@@ -229,7 +233,7 @@ def next_delivery_time(store: BaseStore, purchase_id: str | None = None) -> date
     times = []
     for sh in store.find("shipments", {"purchase_id": purchase_id} if purchase_id else None):
         for p in sh["planned"]:
-            if p["status"] == "delivered" and datetime.fromisoformat(p["at"]) > current:
+            if p["status"] == "delivered" and p["at"] and datetime.fromisoformat(p["at"]) > current:
                 times.append(datetime.fromisoformat(p["at"]))
     return min(times) if times else None
 

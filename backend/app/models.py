@@ -81,7 +81,7 @@ class Requirements(BaseModel):
 
 
 class ParseRequest(BaseModel):
-    shopper_id: str
+    shopper_id: Optional[str] = None  # demo personas only; Shopify shoppers are identified by their session token
     text: str = Field(min_length=3, max_length=1000)
 
 
@@ -111,7 +111,7 @@ class VerifyRequest(BaseModel):
 
 class CheckoutConfirmRequest(BaseModel):
     quote_id: str
-    shopper_id: str
+    shopper_id: Optional[str] = None
     approved_charge_cents: int
     shopper_approved: bool
 
@@ -123,7 +123,7 @@ class RecommendRequest(BaseModel):
 
 class ClaimRequest(BaseModel):
     purchase_id: str
-    shopper_id: str
+    shopper_id: Optional[str] = None
     complaint_text: str = Field(min_length=2, max_length=2000)
 
 
@@ -132,14 +132,14 @@ class ClarifyRequest(BaseModel):
 
 
 class RemedyAcceptRequest(BaseModel):
-    shopper_id: str
+    shopper_id: Optional[str] = None
     confirm: bool
     idempotency_key: Optional[str] = None
     payout_method: Literal["original_payment_method", "push_to_card_concept"] = "original_payment_method"
 
 
 class OutcomeRequest(BaseModel):
-    shopper_id: str
+    shopper_id: Optional[str] = None
     outcome: Literal["fits", "still_not_right"]
 
 
@@ -179,3 +179,54 @@ class StructuredComplaint(BaseModel):
     @classmethod
     def _size(cls, v):
         return normalize_size(v)
+
+
+class SessionRequest(BaseModel):
+    previous_token: Optional[str] = None
+
+
+class SettingsPatch(BaseModel):
+    return_window_days: Optional[int] = Field(default=None, ge=0, le=365)
+    preference_return_fee_cents: Optional[int] = Field(default=None, ge=0, le=100_00)
+    keep_item_partial_refund_pct: Optional[int] = Field(default=None, ge=0, le=100)
+    allow_store_credit: Optional[bool] = None
+    auto_execute_test_remedies: Optional[bool] = None
+    shipping_options: Optional[list[dict]] = None
+    card_offer: Optional[dict] = None
+    learning_thresholds: Optional[dict] = None
+
+    @field_validator("shipping_options")
+    @classmethod
+    def _ship(cls, v):
+        if v is None:
+            return v
+        ids = [o.get("id") for o in v]
+        if "standard" not in ids or len(set(ids)) != len(ids):
+            raise ValueError("shipping options need unique ids, including 'standard'")
+        for o in v:
+            if not (isinstance(o.get("price_cents"), int) and 0 <= o["price_cents"] <= 100_00 and isinstance(o.get("business_days"), int)
+                    and 0 <= o["business_days"] <= 30 and str(o.get("label") or "").strip()):
+                raise ValueError("each shipping option needs a label, price_cents (0-10000) and business_days (0-30)")
+        return [{"id": o["id"], "label": o["label"].strip(), "price_cents": o["price_cents"], "business_days": o["business_days"]} for o in v]
+
+    @field_validator("card_offer")
+    @classmethod
+    def _offer(cls, v):
+        if v is None:
+            return v
+        out = {k: v[k] for k in ("enabled", "label", "credit_cents", "threshold_cents") if k in v}
+        for k in ("credit_cents", "threshold_cents"):
+            if k in out and not (isinstance(out[k], int) and 0 <= out[k] <= 10_000_00):
+                raise ValueError(f"{k} must be whole cents")
+        return out
+
+
+class ScenarioRequest(BaseModel):
+    product_id: str
+    variant_id: str
+
+
+class HistoryRequest(BaseModel):
+    product_id: str
+    size: str
+    to_size: str

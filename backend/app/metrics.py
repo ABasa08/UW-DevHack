@@ -27,6 +27,8 @@ def dashboard(store: BaseStore) -> dict:
     refunds = [e for e in executed if e["payload"]["remedy_type"] in REFUND_TYPES]
     credits = [e for e in executed if e["payload"]["remedy_type"] == "store_credit"]
     reconfirm = of("checkout.reconfirmation_required") + of("checkout.blocked_at_confirm")
+    handed_off = of("checkout.handed_off")
+    awaiting = [r for r in store.find("remedies") if r["status"] == "awaiting_merchant"]
 
     # complaint -> remedy presentation latency (wall clock of the running app)
     latencies = []
@@ -63,6 +65,8 @@ def dashboard(store: BaseStore) -> dict:
             "proposals_blocked": len(blocked),
             "proposals_passed": len(passed),
             "orders_confirmed": len(confirmed),
+            "checkouts_handed_off": len(handed_off),
+            "remedies_awaiting_merchant": len(awaiting),
             "post_approval_changes_caught": len(reconfirm),
             "claims_filed": len(live_claims),
             "claims_needing_review": sum(1 for c in live_claims if c["classification"] == "NEEDS_REVIEW"),
@@ -77,8 +81,9 @@ def dashboard(store: BaseStore) -> dict:
             "order_value_kept_via_exchange_cents": retained,
         },
         "labels": {
-            "session_metrics": "Counted from live events persisted in this demo session (seeded history excluded).",
-            "order_value_kept_via_exchange_cents": "Simulated: approved charge of orders resolved by exchange instead of refund. Not real revenue.",
+            "session_metrics": "Counted from events persisted by this PerkPilot install (seeded and sample history excluded).",
+            "order_value_kept_via_exchange_cents": ("Approved charge of orders resolved by exchange instead of refund. On Shopify test orders "
+                                                    "no real money moved; either way it's a proxy, not measured revenue."),
             "avg_complaint_to_remedy_ms": "Wall-clock time from complaint submission to eligible remedies being presented, in this app.",
         },
         "blocked_by_rule": dict(failed_rules),
@@ -86,6 +91,7 @@ def dashboard(store: BaseStore) -> dict:
                                "note": "'all' includes seeded historical claims (synthetic)."},
         "recent_purchases": sorted([
             {"purchase_id": p["purchase_id"], "shopper_id": p["shopper_id"], "product_name": p["product_name"], "size": p["size"],
+             "shopify_order_name": p.get("shopify_order_name"), "shopify_test": p.get("shopify_test"),
              "color": p["color"], "approved_charge": fmt_cents(p["approved_charge_cents"]), "status": p["status"],
              "checks_passed": sum(1 for c in p["verification_results"] if c["status"] == "PASS"),
              "checks_total": len(p["verification_results"]), "created_at": p["created_at"]}

@@ -30,10 +30,16 @@ from .store import BaseStore
 TOPICS_BY_SCOPE = {
     "read_products": ["PRODUCTS_CREATE", "PRODUCTS_UPDATE", "PRODUCTS_DELETE"],
     "read_inventory": ["INVENTORY_LEVELS_UPDATE"],
-    "read_orders": ["ORDERS_CREATE", "ORDERS_UPDATED"],
+    "read_orders": ["ORDERS_CREATE", "ORDERS_UPDATED", "REFUNDS_CREATE"],
+    "read_fulfillments": ["FULFILLMENTS_CREATE", "FULFILLMENTS_UPDATE", "FULFILLMENT_EVENTS_CREATE"],
+    "read_discounts": ["DISCOUNTS_CREATE", "DISCOUNTS_UPDATE", "DISCOUNTS_DELETE"],
 }
 CATALOG_TOPICS = {"products/create", "products/update", "products/delete", "inventory_levels/update"}
 ORDER_TOPICS = {"orders/create", "orders/updated"}
+# Topics whose payload names an order PerkPilot may track; the canonical order is re-read from Shopify.
+ORDER_CHILD_TOPICS = {"refunds/create", "fulfillments/create", "fulfillments/update", "fulfillment_events/create"}
+DISCOUNT_TOPICS = {"discounts/create", "discounts/update", "discounts/delete"}
+COMPLIANCE_TOPICS = {"customers/data_request", "customers/redact", "shop/redact"}
 STATUS_ID = "shopify_status"
 # REST says null / "partial"; GraphQL says UNFULFILLED / PARTIALLY_FULFILLED. Normalise to the GraphQL words.
 FULFILLMENT = {"": "unfulfilled", "partial": "partially_fulfilled"}
@@ -47,7 +53,8 @@ query Orders($after: String) {
     nodes {
       id name createdAt cancelledAt displayFinancialStatus displayFulfillmentStatus
       currentTotalPriceSet { shopMoney { amount currencyCode } }
-      lineItems(first: 20) { nodes { title variantTitle quantity originalUnitPriceSet { shopMoney { amount } } product { id } } }
+      customAttributes { key value }
+      lineItems(first: 20) { nodes { title variantTitle quantity originalUnitPriceSet { shopMoney { amount } } product { id } variant { id } } }
     }
   }
 }
@@ -78,8 +85,10 @@ def _cents(amount) -> int:
 
 
 def _order_doc(*, oid: str, name: str, created_at: str, cancelled: bool, financial: str | None, fulfillment: str | None,
-               total, currency: str, items: list[dict]) -> dict:
+               total, currency: str, items: list[dict], attributes: dict | None = None) -> dict:
+    attributes = attributes or {}
     return {
+        "perkpilot_purchase_id": attributes.get("perkpilot_purchase_id"), "test": attributes.get("_test"),
         "_id": oid, "order_id": oid, "name": name, "created_at": created_at, "cancelled": cancelled,
         "financial_status": (financial or "pending").lower(),
         "fulfillment_status": FULFILLMENT.get((fulfillment or "").lower(), (fulfillment or "").lower()),
@@ -94,8 +103,10 @@ def order_from_webhook(p: dict) -> dict:
         cancelled=bool(p.get("cancelled_at")), financial=p.get("financial_status"), fulfillment=p.get("fulfillment_status"),
         total=p.get("current_total_price", p.get("total_price")), currency=p.get("currency", "USD"),
         items=[{"title": li.get("title", ""), "variant": li.get("variant_title") or "", "quantity": li.get("quantity", 1),
-                "unit_cents": _cents(li.get("price")), "product_id": f"{PREFIX}{li['product_id']}" if li.get("product_id") else None}
+                "unit_cents": _cents(li.get("price")), "product_id": f"{PREFIX}{li['product_id']}" if li.get("product_id") else None,
+                "variant_id": f"{PREFIX}{li['product_id']}-{li['variant_id']}" if li.get("product_id") and li.get("variant_id") else None}
                for li in p.get("line_items", [])],
+        attributes={**{a.get("name"): a.get("value") for a in p.get("note_attributes") or []}, "_test": bool(p.get("test"))},
     )
 
 
@@ -105,10 +116,13 @@ def order_from_graphql(n: dict) -> dict:
         oid=_numeric_id(n["id"]), name=n["name"], created_at=n["createdAt"], cancelled=bool(n.get("cancelledAt")),
         financial=n.get("displayFinancialStatus"), fulfillment=n.get("displayFulfillmentStatus"),
         total=money["amount"], currency=money["currencyCode"],
-        items=[{"title": li["title"], "variant": li.get("variantTitle") or "", "quantity": li["quantity"],
+        items=[{"title": li.get("title", ""), "variant": li.get("variantTitle") or "", "quantity": li["quantity"],
                 "unit_cents": _cents(li["originalUnitPriceSet"]["shopMoney"]["amount"]),
-                "product_id": f"{PREFIX}{_numeric_id(li['product']['id'])}" if li.get("product") else None}
+                "product_id": f"{PREFIX}{_numeric_id(li['product']['id'])}" if li.get("product") else None,
+                "variant_id": (f"{PREFIX}{_numeric_id(li['product']['id'])}-{_numeric_id(li['variant']['id'])}"
+                               if li.get("product") and li.get("variant") else None)}
                for li in n["lineItems"]["nodes"]],
+        attributes={**{a["key"]: a["value"] for a in n.get("customAttributes") or []}, "_test": n.get("test")},
     )
 
 
@@ -136,8 +150,44 @@ def handle_webhook(store: BaseStore, topic: str, webhook_id: str, payload: dict)
         title = payload.get("title")
         _log(store, "catalog", f"{CATALOG_LABELS[topic]}{f': {title}' if title else ''}", webhook_id)
         return "catalog"
+    if topic in ORDER_CHILD_TOPICS:
+        _log(store, "order", f"{topic.split('/')[0].replace('_', ' ').capitalize()[:-1]} {topic.split('/')[1]} on order {payload.get('order_id')}",
+             webhook_id)
+        return "order_child"
+    if topic in DISCOUNT_TOPICS:
+        _log(store, "catalog", f"Discount {topic.split('/')[1]}d", webhook_id)
+        return "discounts"
+    if topic in COMPLIANCE_TOPICS:
+        # PerkPilot stores no customer names, emails or addresses; claims reference Shopify ids only.
+        _log(store, "compliance", f"Privacy request {topic} acknowledged (no customer personal data stored)", webhook_id)
+        return "compliance"
+    if topic == "app/uninstalled":
+        _log(store, "connect", "App uninstalled from the store", webhook_id)
+        status = store.get("meta", STATUS_ID) or {"_id": STATUS_ID}
+        store.put("meta", {**status, "webhooks": None, "uninstalled_at": wall_now()})
+        return "uninstalled"
     _log(store, "other", f"Ignored topic {topic}", webhook_id)
     return "ignored"
+
+
+def follow_up(store: BaseStore, result: str, payload: dict) -> None:
+    """Background work after acknowledging a webhook: re-read canonical Shopify state for anything PerkPilot tracks."""
+    from . import shopify_commerce
+    from .shopify_api import ShopifyError, gid
+
+    try:
+        if result == "catalog":
+            resync_catalog(store)
+        elif result == "discounts":
+            shopify_commerce.sync_discounts(store)
+        elif result == "order" and any(a.get("name") == "perkpilot_purchase_id" for a in payload.get("note_attributes") or []):
+            shopify_commerce.reconcile_order(store, gid("Order", payload["id"]))
+        elif result == "order_child" and payload.get("order_id"):
+            order_gid = gid("Order", payload["order_id"])
+            if store.find_one("purchases", {"shopify_order_id": order_gid}):
+                shopify_commerce.reconcile_order(store, order_gid)
+    except (ShopifyError, httpx.HTTPError, RuntimeError) as exc:
+        _log(store, "error", f"Follow-up for a {result} webhook failed: {exc}")
 
 
 # ---------------------------------------------------------------- catalog resync (coalesced)
@@ -161,6 +211,9 @@ def resync_catalog(store: BaseStore, client: httpx.Client | None = None) -> dict
                 nodes = fetch_products(c, shop, get_token(c, shop), os.environ.get("SHOPIFY_API_VERSION", API_VERSION))
             res = sync_catalog(store, nodes, os.environ.get("SHOPIFY_SIZE_OPTION", "Size"),
                                os.environ.get("SHOPIFY_COLOR_OPTION", "Color"), shop)
+            from .shopify_commerce import apply_settings
+
+            apply_settings(store)  # synced products get the merchant's shipping options
             status = store.get("meta", STATUS_ID) or {"_id": STATUS_ID}
             status.update(last_sync_at=wall_now(), last_sync={k: len(v) for k, v in res.items()})
             store.put("meta", status)
@@ -232,12 +285,21 @@ def connect(store: BaseStore, public_url: str, client: httpx.Client | None = Non
         orders = backfill_orders(store, c, shop, token) if "read_orders" in hooks["scopes"] else 0
         catalog = sync_catalog(store, fetch_products(c, shop, token, os.environ.get("SHOPIFY_API_VERSION", API_VERSION)),
                                os.environ.get("SHOPIFY_SIZE_OPTION", "Size"), os.environ.get("SHOPIFY_COLOR_OPTION", "Color"), shop)
+    discounts = 0
+    from .core import shopify_mode
+
+    if shopify_mode():
+        from . import shopify_commerce
+
+        shopify_commerce.apply_settings(store)
+        if "read_discounts" in hooks["scopes"]:
+            discounts = shopify_commerce.sync_discounts(store)
     status = store.get("meta", STATUS_ID) or {"_id": STATUS_ID}
-    status.update(webhooks=hooks, connected_at=wall_now(), callback=public_url.rstrip("/") + "/api/shopify/webhooks",
+    status.update(webhooks=hooks, connected_at=wall_now(), discounts_synced=discounts, callback=public_url.rstrip("/") + "/api/shopify/webhooks",
                   last_sync_at=wall_now(), last_sync={k: len(v) for k, v in catalog.items()})
     store.put("meta", status)
     _log(store, "connect", f"Connected: {len(hooks['registered'])} webhook topics, {len(catalog['synced'])} products, {orders} orders")
-    return {**hooks, "orders_backfilled": orders, "products_synced": len(catalog["synced"])}
+    return {**hooks, "orders_backfilled": orders, "products_synced": len(catalog["synced"]), "discounts_synced": discounts}
 
 
 # ---------------------------------------------------------------- dashboard

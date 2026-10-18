@@ -11,3 +11,7 @@ frontend/.next/
 .agentmemorysync/
 
 .idea/
+
+# Shopify CLI workspace
+/node_modules/
+.shopify/

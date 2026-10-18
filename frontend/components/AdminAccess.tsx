@@ -1,13 +1,14 @@
 "use client";
 
 import { useEffect, useState, type ReactNode } from "react";
-import { ApiError, adminToken, api } from "@/lib/api";
+import { ApiError, adminToken, api, embeddedInAdmin } from "@/lib/api";
 import { useLoad } from "@/lib/hooks";
 import { Button, Card, ErrorBox, Loading } from "./ui";
 
 // Loads an /api/admin route with the tab's admin token. The server enforces the token; this only asks for it.
-export default function AdminAccess({ path, children, refreshMs }: {
+export default function AdminAccess({ path, children, refreshMs, lockable }: {
   path: string;
+  lockable?: boolean; // show "lock" once, on the console's outer gate
   children: (data: any, reload: () => Promise<void>) => ReactNode;
   refreshMs?: number; // poll for live data; paused while the tab is hidden
 }) {
@@ -37,7 +38,10 @@ export default function AdminAccess({ path, children, refreshMs }: {
     return (
       <Card className="max-w-xl p-6">
         <h2 className="font-semibold">Enter the admin token</h2>
-        <p className="mt-1 text-sm text-ink-soft">Store orders and order audits are private merchant data, so this view needs the admin token.</p>
+        <p className="mt-1 text-sm text-ink-soft">
+          Open PerkPilot from your Shopify admin (Apps → PerkPilot) to sign in automatically, or enter the admin token from
+          <code className="mx-1 rounded bg-paper-sunk px-1">backend/.env</code>to use the console directly.
+        </p>
         <form
           className="mt-4 flex flex-wrap gap-2"
           onSubmit={(e) => {
@@ -65,7 +69,7 @@ export default function AdminAccess({ path, children, refreshMs }: {
   return (
     <>
       {children(res.data, res.reload)}
-      <button
+      {lockable && !embeddedInAdmin() && adminToken.get() && <button
         className="mt-6 text-xs text-ink-mute underline-offset-2 hover:underline"
         onClick={() => {
           adminToken.set("");
@@ -74,7 +78,7 @@ export default function AdminAccess({ path, children, refreshMs }: {
         }}
       >
         Lock admin access in this tab
-      </button>
+      </button>}
     </>
   );
 }

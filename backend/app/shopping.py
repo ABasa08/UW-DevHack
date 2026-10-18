@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from .ai import parse_shopping_request
-from .core import DomainError, MERCHANT_ID, append_event, fmt_cents, next_id, now, sha256_hex, today
+from .core import DomainError, MERCHANT_ID, append_event, fmt_cents, merchant_name, next_id, now, sha256_hex, shopify_mode, today
 from .models import Requirements
 from .pricing import catalog_facets, estimate_delivery, find_variant, size_label, unit_price
 from .records import make_purchase_record, make_shipment, process_shipments
@@ -24,7 +24,7 @@ def parse_intent(store: BaseStore, shopper_id: str, text: str) -> dict:
     parsed = parse_shopping_request(text, today(store), {**catalog_facets(store), "titles": titles})
     brand = parsed["requirements"].get("brand")
     if brand and not any(brand_matches(p["brand"], brand) for p in store.find("products", {"status": "active"})):
-        parsed["notes"].append(f"StrideLab Running doesn't carry {brand}. Brands available here: {', '.join(carried_brands(store))}. "
+        parsed["notes"].append(f"{merchant_name(store)} doesn't carry {brand}. Brands available here: {', '.join(carried_brands(store))}. "
                                "You can clear the brand below to see similar shoes.")
     intent_id = next_id(store, "int")
     intent = {
@@ -79,7 +79,7 @@ def confirm_intent(store: BaseStore, intent_id: str, req: Requirements, change_r
 
 
 def _confirmed(intent: dict) -> dict:
-    if intent["status"] not in ("confirmed", "purchased") or not intent["confirmed_requirements"]:
+    if intent["status"] not in ("confirmed", "checkout_started", "purchased") or not intent["confirmed_requirements"]:
         raise DomainError("Confirm your requirements before PerkPilot can recommend or verify anything.", 409, "intent_not_confirmed")
     return intent["confirmed_requirements"]
 
@@ -112,7 +112,7 @@ def _evaluate_candidates(store: BaseStore, req: dict, shopper_id: str, pm: str, 
             if colors and req.get("color"):
                 reason += f" (size {req['size']} comes in {', '.join(colors)})"
             candidates.append({"product_id": product["product_id"], "name": product["name"], "eligible": False, "reasons": [reason],
-                               "price_cents": product["price_cents"], "best_option": None})
+                               "price_cents": unit_price(product, None), "best_option": None})
             continue
         base = {"shipping_option": "standard", "payment_method_id": pm}
         if not product["delivery_options"]:
@@ -137,7 +137,7 @@ def _evaluate_candidates(store: BaseStore, req: dict, shopper_id: str, pm: str, 
             elif best:
                 reasons.append(best["failure_summary"] or "No option satisfies your requirements")
         candidates.append({"product_id": product["product_id"], "name": product["name"], "eligible": bool(passing),
-                           "reasons": reasons, "price_cents": product["price_cents"], "variant_id": variant["variant_id"],
+                           "reasons": reasons, "price_cents": unit_price(product, variant), "variant_id": variant["variant_id"],
                            "best_option": best})
     return candidates
 
@@ -149,7 +149,7 @@ def _no_match_help(store: BaseStore, req: dict, shopper_id: str, pm: str, apply_
     """When nothing qualifies: explain why, and offer single-field relaxations that would actually find something."""
     notices = []
     if req.get("brand") and not any(brand_matches(p["brand"], req["brand"]) for p in store.find("products", {"status": "active"})):
-        notices.append(f"StrideLab Running doesn't carry {req['brand']}. Brands available here: {', '.join(carried_brands(store))}.")
+        notices.append(f"{merchant_name(store)} doesn't carry {req['brand']}. Brands available here: {', '.join(carried_brands(store))}.")
     def attempt(fields: list[str], label: str) -> dict | None:
         relaxed = {**req, **{f: None for f in fields}, **({"deadline_expression": None} if "deadline_date" in fields else {})}
         found = sorted([c for c in _evaluate_candidates(store, relaxed, shopper_id, pm, apply_learned_rules) if c["eligible"]],
@@ -243,6 +243,9 @@ def confirm_checkout(store: BaseStore, quote_id: str, shopper_id: str, approved_
     if quote["status"] == "used":
         existing = store.find_one("purchases", {"quote_id": quote_id})
         return {"status": "ALREADY_CONFIRMED", "purchase": existing, "duplicate": True}
+    if quote["status"] == "handed_off":
+        return {"status": "AWAITING_PAYMENT", "purchase": None, "duplicate": True,
+                "handoff": public_handoff(store.find_one("handoffs", {"quote_id": quote_id}))}
     if not shopper_approved:
         raise DomainError("Explicit shopper approval is required to place this order.", 400, "approval_required")
     if quote["status"] != "open" or quote["result"]["status"] != PASS:
@@ -278,6 +281,8 @@ def confirm_checkout(store: BaseStore, quote_id: str, shopper_id: str, approved_
     product = store.get("products", quote["proposal"]["product_id"])
     variant = find_variant(product, quote["proposal"]["variant_id"])
     qty = quote["proposal"]["quantity"]
+    if shopify_mode() and product.get("source") == "shopify":
+        return _hand_off_to_shopify(store, quote, intent, product, variant, rerun, shopper_id)
     product["inventory_by_variant"][variant["variant_id"]] -= qty
     store.put("products", product)
 
@@ -313,3 +318,34 @@ def confirm_checkout(store: BaseStore, quote_id: str, shopper_id: str, approved_
     intent["status"] = "purchased"
     store.put("intents", intent)
     return {"status": "CONFIRMED", "purchase": record, "duplicate": False}
+
+
+def public_handoff(h: dict | None) -> dict | None:
+    """What the shopper's browser needs to finish paying; draft-order internals stay server-side."""
+    if not h:
+        return None
+    return {k: h.get(k) for k in ("purchase_id", "status", "checkout_url", "order_name", "approved_at")} | {
+        "approved_charge_cents": h["breakdown"]["charge_cents"], "draft_order_name": h["draft_order_name"]}
+
+
+def _hand_off_to_shopify(store: BaseStore, quote: dict, intent: dict, product: dict, variant: dict, verification: dict,
+                         shopper_id: str) -> dict:
+    """Shopify takes payment: re-read live stock, create the exact draft order, and send the shopper to Shopify checkout."""
+    from .shopify_commerce import begin_handoff, live_stock
+
+    try:
+        stock = live_stock([variant])[variant["variant_id"]]
+    except Exception:  # noqa: BLE001 - the draft order's inventory reservation still guards the sale
+        stock = None
+    if stock is not None and stock < quote["proposal"]["quantity"]:
+        quote["status"] = "superseded"
+        store.put("quotes", quote)
+        raise DomainError("Shopify shows this variant just sold out. Please choose another option.", 409, "inventory_conflict")
+    h = begin_handoff(store, quote=quote, intent=intent, product=product, variant=variant, verification=verification,
+                      shopper=_shopper(store, shopper_id))
+    quote["status"] = "handed_off"
+    quote["purchase_id"] = h["purchase_id"]
+    store.put("quotes", quote)
+    intent["status"] = "checkout_started"
+    store.put("intents", intent)
+    return {"status": "AWAITING_PAYMENT", "purchase": None, "duplicate": False, "handoff": public_handoff(h)}

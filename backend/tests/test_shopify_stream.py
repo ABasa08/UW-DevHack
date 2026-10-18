@@ -91,7 +91,7 @@ def test_register_replaces_stale_urls_and_skips_unscoped_topics():
 
     res = shopify_stream.register_webhooks(gql_transport(handler), "x.myshopify.com", "tok", "https://new.example/api/shopify/webhooks")
     assert res["registered"] == ["PRODUCTS_CREATE", "PRODUCTS_UPDATE", "PRODUCTS_DELETE", "INVENTORY_LEVELS_UPDATE"]
-    assert res["missing_scopes"] == ["read_orders"] and not res["errors"]
+    assert res["missing_scopes"] == ["read_orders", "read_fulfillments", "read_discounts"] and not res["errors"]
     deleted = [v["id"] for q, v in seen if q == "mutation" and "id" in v]
     created = [v["topic"] for q, v in seen if q == "mutation" and "topic" in v]
     assert deleted == ["gid://1"] and created == ["PRODUCTS_UPDATE", "PRODUCTS_DELETE", "INVENTORY_LEVELS_UPDATE"]

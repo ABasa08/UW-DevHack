@@ -14,6 +14,7 @@ from .store import BaseStore
 
 STORE_TZ = ZoneInfo("America/Los_Angeles")
 MERCHANT_ID = "m_stridelab"
+POLICY_ID = "pol_stridelab"  # the merchant's one policy document (ids kept stable for existing demo data)
 CURRENCY = "USD"
 # Tuesday of the demonstration week, 10:00 store time.
 DEMO_START = datetime(2026, 10, 20, 10, 0, tzinfo=STORE_TZ)
@@ -40,20 +41,37 @@ def load_env() -> None:
                 os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
 
 
+def mode() -> str:
+    """demo (fixture store, everything simulated), live (advisory, no commerce effects) or shopify
+    (Shopify owns catalog, checkout, payments, orders, refunds and fulfillment)."""
+    m = os.environ.get("PERKPILOT_MODE", "demo").strip().lower()
+    return m if m in ("live", "shopify") else "demo"
+
+
 def live_mode() -> bool:
     """PERKPILOT_MODE=live: real clock, no seeding, no simulated payments/refunds/shipping."""
-    return os.environ.get("PERKPILOT_MODE", "demo").strip().lower() == "live"
+    return mode() == "live"
+
+
+def shopify_mode() -> bool:
+    return mode() == "shopify"
+
+
+def merchant_name(store: BaseStore) -> str:
+    m = store.get("merchants", MERCHANT_ID)
+    return m["name"] if m else "the store"
 
 
 # ---------------------------------------------------------------- clock
 
 
 def now(store: BaseStore) -> datetime:
+    """The demo clock where a store has one (demo seed, evaluation sandboxes); real time otherwise."""
     if live_mode():
         return datetime.now(STORE_TZ)
     meta = store.get("meta", "clock")
     if not meta:
-        return DEMO_START
+        return datetime.now(STORE_TZ) if shopify_mode() else DEMO_START
     return datetime.fromisoformat(meta["now"]).astimezone(STORE_TZ)
 
 

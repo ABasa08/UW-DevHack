@@ -1,0 +1,34 @@
+{% comment %}
+  PerkPilot assistant (app embed). Enable it in Online Store > Themes > Customize > App embeds.
+  Adds a floating "Shopping assistant" button. The assistant runs from your PerkPilot app URL; payment always happens
+  on this store's own Shopify checkout.
+{% endcomment %}
+{%- assign perkpilot_url = block.settings.app_url | strip -%}
+<div id="perkpilot-root" hidden
+  data-app-url="{{ perkpilot_url }}"
+  data-shop="{{ shop.permanent_domain }}"
+  data-store-name="{{ shop.name | escape }}"
+  data-label="{{ block.settings.label | escape }}"
+  data-accent="{{ block.settings.accent }}"
+  data-signed-in="{% if customer %}1{% endif %}"
+  {% if product %}data-product-id="{{ product.id }}" data-product-title="{{ product.title | escape }}"{% endif %}></div>
+
+{% schema %}
+{
+  "name": "PerkPilot assistant",
+  "target": "body",
+  "javascript": "perkpilot.js",
+  "stylesheet": "perkpilot.css",
+  "settings": [
+    {
+      "type": "text",
+      "id": "app_url",
+      "label": "PerkPilot app URL",
+      "default": "https://variably-dinner-doornail.ngrok-free.dev",
+      "info": "Where your PerkPilot app is served (HTTPS, no trailing slash)."
+    },
+    { "type": "text", "id": "label", "label": "Button label", "default": "Shopping assistant" },
+    { "type": "color", "id": "accent", "label": "Button color", "default": "#111111" }
+  ]
+}
+{% endschema %}
