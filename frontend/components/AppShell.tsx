@@ -12,20 +12,31 @@ function DemoBar() {
   const { state, stateError, bump } = useDemo();
   const router = useRouter();
   const [busy, setBusy] = useState<string | null>(null);
-  const [msg, setMsg] = useState<string | null>(null);
+  const [msg, setMsg] = useState<{ text: string; tone: "info" | "error" } | null>(null);
 
   async function run(label: string, fn: () => Promise<unknown>) {
     setBusy(label);
     setMsg(null);
     try {
-      await fn();
+      const out: any = await fn();
       await bump();
+      if (out?.now) {
+        // Say what the clock move did; otherwise only the small clock text changes.
+        const moved = out.shipments_updated ?? [];
+        const delivered = moved.filter((s: any) => s.status === "delivered").length;
+        const detail = delivered
+          ? `${delivered} deliver${delivered === 1 ? "y" : "ies"} arrived`
+          : moved.length ? `${moved.length} shipment${moved.length === 1 ? "" : "s"} updated` : "no shipments in transit";
+        setMsg({ text: `Clock moved to ${dateTime(out.now)} PT · ${detail}`, tone: "info" });
+        window.setTimeout(() => setMsg((m) => (m?.tone === "info" ? null : m)), 4000);
+      }
     } catch (e) {
-      setMsg(e instanceof Error ? e.message : String(e));
+      setMsg({ text: e instanceof Error ? e.message : String(e), tone: "error" });
     } finally {
       setBusy(null);
     }
   }
+  const nothingPending = !!state && !state.next_delivery_at;
 
   return (
     <div className="bg-ink text-[13px] text-white/80">
@@ -45,8 +56,9 @@ function DemoBar() {
             {busy === "day" ? "…" : "+1 day"}
           </button>
           <button
-            className="rounded px-2 py-1 hover:bg-white/10 disabled:opacity-50"
-            disabled={!!busy}
+            className="rounded px-2 py-1 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
+            disabled={!!busy || nothingPending}
+            title={nothingPending ? "Nothing is in transit. Place an order or start an exchange first." : `Jump to the next delivery (${state ? dateTime(state.next_delivery_at) : ""} PT)`}
             onClick={() => run("delivery", () => api.post("/api/demo/advance", { until: "next_delivery" }))}
           >
             {busy === "delivery" ? "…" : "Next delivery →"}
@@ -78,7 +90,13 @@ function DemoBar() {
           </span>
         )}
       </div>
-      {(msg || stateError) && <div className="bg-fail px-4 py-1.5 text-center text-white">{msg || stateError}</div>}
+      {stateError ? (
+        <div className="bg-fail px-4 py-1.5 text-center text-white">{stateError}</div>
+      ) : msg ? (
+        <div role="status" className={cx("px-4 py-1.5 text-center", msg.tone === "error" ? "bg-fail text-white" : "bg-white/10 text-white")}>
+          {msg.text}
+        </div>
+      ) : null}
     </div>
   );
 }

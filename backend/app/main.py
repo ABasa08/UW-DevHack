@@ -17,7 +17,7 @@ from .evaluation import run_evaluation
 from .fixtures import seed
 from .models import (AdvanceRequest, CheckoutConfirmRequest, ClaimRequest, ClarifyRequest, ConfirmIntentRequest, OutcomeRequest,
                      ParseRequest, RecommendRequest, RemedyAcceptRequest, RuleDecisionRequest, RuleToggleRequest, VerifyRequest)
-from .records import integrity, shipment_for
+from .records import integrity, next_delivery_time, shipment_for
 from .store import BaseStore, create_store
 from .verifier import active_rules_for
 
@@ -218,6 +218,7 @@ def register_demo_routes(app: FastAPI, S) -> None:
         return {"now": now(s).isoformat(), "timezone": "America/Los_Angeles", "store": s.mode, "ai": ai_status(),
                 "merchant": s.get("merchants", MERCHANT_ID), "shoppers": s.find("shoppers"),
                 "payment_methods": s.find("payment_methods"),
+                "next_delivery_at": (nd.isoformat() if (nd := next_delivery_time(s)) else None),
                 "disclosure": "Simulated store, shoppers, payments, refunds and shipping. No real money moves."}
 
     @app.post("/api/demo/reset")
