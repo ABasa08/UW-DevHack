@@ -15,6 +15,7 @@ import contextvars
 import json
 import os
 import re
+import time
 from contextlib import contextmanager
 from datetime import date, timedelta
 from typing import Any
@@ -59,34 +60,76 @@ def ai_status() -> dict:
 
 
 def gemini_model() -> str:
-    return os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+    return os.environ.get("GEMINI_MODEL", "gemini-3.5-flash")
 
 
-def _call_gemini(system: str, user: str, schema: dict, timeout: float = 12.0) -> dict:
+def gemini_models() -> list[str]:
+    """Primary model, then an optional backup tried when the primary is overloaded."""
+    backup = os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-3.5-flash-lite").strip()
+    return [m for m in dict.fromkeys([gemini_model(), backup]) if m]
+
+
+TRANSIENT = {429, 500, 502, 503, 504}
+TIME_BUDGET_S = 10.0  # total time allowed for all Gemini attempts before using the fallback interpreter
+
+
+def _post_gemini(model: str, body: dict, key: str, timeout: float) -> dict:
+    resp = httpx.post(GEMINI_URL.format(model=model), json=body, timeout=timeout,
+                      headers={"x-goog-api-key": key, "content-type": "application/json"})
+    resp.raise_for_status()
+    parts = resp.json()["candidates"][0]["content"]["parts"]
+    # Thinking models may return thought parts; the answer is the first non-thought text part.
+    text = next(p["text"] for p in parts if "text" in p and not p.get("thought"))
+    return json.loads(text)
+
+
+def _call_gemini(system: str, user: str, schema: dict) -> tuple[dict, str]:
     key = os.environ["GEMINI_API_KEY"].strip()
+    config: dict[str, Any] = {"temperature": 0, "responseMimeType": "application/json", "responseSchema": schema}
+    level = os.environ.get("GEMINI_THINKING_LEVEL", "low").strip()
+    if level:
+        config["thinkingConfig"] = {"thinkingLevel": level}
     body = {
         "systemInstruction": {"parts": [{"text": system}]},
         "contents": [{"role": "user", "parts": [{"text": user}]}],
-        "generationConfig": {"temperature": 0, "responseMimeType": "application/json", "responseSchema": schema},
+        "generationConfig": config,
     }
-    resp = httpx.post(GEMINI_URL.format(model=gemini_model()), json=body, timeout=timeout,
-                      headers={"x-goog-api-key": key, "content-type": "application/json"})
-    resp.raise_for_status()
-    data = resp.json()
-    text = data["candidates"][0]["content"]["parts"][0]["text"]
-    return json.loads(text)
+    deadline = time.monotonic() + TIME_BUDGET_S
+    last: Exception | None = None
+    for model in gemini_models():
+        for attempt in range(2):  # one quick retry on transient overload before moving to the backup model
+            remaining = deadline - time.monotonic()
+            if remaining < 1.0:
+                raise last or httpx.TimeoutException("Gemini time budget exhausted")
+            try:
+                return _post_gemini(model, body, key, remaining), model
+            except httpx.HTTPStatusError as exc:
+                last = exc
+                code = exc.response.status_code
+                if code == 400 and "thinking" in exc.response.text.lower() and "thinkingConfig" in config:
+                    config.pop("thinkingConfig")  # model doesn't support this thinking level; retry plainly
+                    continue
+                if code not in TRANSIENT:
+                    raise
+                if attempt == 0:
+                    time.sleep(0.5)
+            except httpx.TimeoutException as exc:
+                last = exc
+                break
+    raise last or httpx.TimeoutException("Gemini unavailable")
 
 
 def _interpret(system: str, user: str, schema: dict, fallback, validate) -> tuple[Any, dict]:
     status = ai_status()
     if status["mode"] == "gemini":
         try:
-            raw = _call_gemini(system, user, schema)
-            return validate(raw), {"mode": "gemini", "model": status["model"], "note": "Live Gemini interpretation, validated against the backend schema."}
-        except (httpx.HTTPError, KeyError, IndexError, json.JSONDecodeError, ValidationError, ValueError) as exc:
+            raw, model = _call_gemini(system, user, schema)
+            return validate(raw), {"mode": "gemini", "model": model, "note": "Live Gemini interpretation, validated against the backend schema."}
+        except (httpx.HTTPError, KeyError, IndexError, StopIteration, json.JSONDecodeError, ValidationError, ValueError) as exc:
+            detail = f"HTTP {exc.response.status_code}" if isinstance(exc, httpx.HTTPStatusError) else type(exc).__name__
             result = fallback()
             return result, {"mode": "fallback", "model": None,
-                            "note": f"Gemini output unavailable or rejected by validation ({type(exc).__name__}); used deterministic fallback interpreter."}
+                            "note": f"Gemini output unavailable or rejected by validation ({detail}); used deterministic fallback interpreter."}
     return fallback(), {"mode": "fallback", "model": None, "note": status["note"]}
 
 
@@ -337,15 +380,17 @@ def parse_complaint(text: str, order_summary: str) -> tuple[dict, dict]:
 
 # ---------------------------------------------------------------- rule wording
 
-RULE_SCHEMA = {"type": "OBJECT", "properties": {"customer_message": {"type": "STRING"}, "merchant_summary": {"type": "STRING"}},
-               "required": ["customer_message", "merchant_summary"]}
+RULE_SCHEMA = {"type": "OBJECT", "properties": {"merchant_summary": {"type": "STRING"}}, "required": ["merchant_summary"]}
 
 
 def draft_rule_text(facts: dict) -> tuple[dict, dict]:
+    """The shopper-facing sentence is fixed wording; Gemini only drafts the merchant's summary."""
+    customer_message = (f"Some customers reported a tight fit in size {facts['from_size']}. "
+                        f"Would you like to review size {facts['to_size']}?")
+
     def fallback():
         return {
-            "customer_message": (f"Some customers reported a tight fit in size {facts['from_size']}. "
-                                 f"Would you like to review size {facts['to_size']}?"),
+            "customer_message": customer_message,
             "merchant_summary": (f"{facts['validated']} confirmed fit-related exchanges from size {facts['from_size']} to "
                                  f"{facts['to_size']} among {facts['fulfilled']} fulfilled size-{facts['from_size']} orders of "
                                  f"{facts['product_name']} suggest shoppers ordering size {facts['from_size']} may benefit from "
@@ -353,16 +398,15 @@ def draft_rule_text(facts: dict) -> tuple[dict, dict]:
         }
 
     def validate(raw):
-        msg = str(raw["customer_message"]).strip()
         summary = str(raw["merchant_summary"]).strip()
-        # The draft must not invent numbers or change sizes: require both sizes present and length limits.
-        if not msg or len(msg) > 220 or facts["to_size"] not in msg or facts["from_size"] not in msg:
+        # Must restate the real counts and sizes, and must not introduce other numbers.
+        numbers = set(re.findall(r"\d+(?:\.\d+)?", summary))
+        allowed = {str(facts["validated"]), str(facts["fulfilled"]), facts["from_size"], facts["to_size"]}
+        if not summary or len(summary) > 400 or not allowed <= numbers or not numbers <= allowed:
             raise ValueError("draft failed wording constraints")
-        if not summary or len(summary) > 500:
-            raise ValueError("draft failed wording constraints")
-        return {"customer_message": msg, "merchant_summary": summary}
+        return {"customer_message": customer_message, "merchant_summary": summary}
 
-    system = ("Draft short, neutral wording for a merchant-reviewed size guidance note. Do not claim a defect, do not use urgency, "
-              "do not add numbers that are not in the facts. The customer message must be a question offering to review the other size "
-              "and must mention both sizes.")
+    system = ("Write a one- or two-sentence summary for a merchant reviewing a proposed size-guidance rule. State the number of "
+              "confirmed fit exchanges, the number of fulfilled orders, and both sizes, using exactly the numbers given and no others. "
+              "Neutral tone: do not claim a product defect and do not overstate the evidence.")
     return _interpret(system, json.dumps(facts), RULE_SCHEMA, fallback, validate)

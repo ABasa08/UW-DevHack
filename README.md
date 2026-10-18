@@ -41,7 +41,7 @@ The shopper confirms a structured version of what they want. A deterministic Pyt
 - Interpreting complaints into structured issues.
 - Drafting the wording of proposed rules, checked so that both sizes appear and no new numbers are introduced.
 
-If no key is set, or Gemini output fails validation, a deterministic rule-based interpreter runs instead. The UI says so ("fallback interpreter"); it is never presented as live AI.
+Models: `gemini-3.5-flash` with low thinking (about 1.5s per call), with `gemini-3.5-flash-lite` as a backup when the primary is overloaded. On a 429/5xx the call retries once and then tries the backup, all within a 10-second budget. If no key is set, Gemini stays unavailable, or its output fails validation, a deterministic rule-based interpreter runs instead. The UI says so ("fallback interpreter"); it is never presented as live AI. The shopper-facing guidance sentence uses fixed wording; Gemini drafts only the merchant summary, which must restate the real counts and contain no other numbers.
 
 ### How deterministic verification works (`backend/app/verifier.py`, `pricing.py`)
 
@@ -103,7 +103,7 @@ Each run seeds an isolated in-memory copy of the store, so live demo data is nev
 |---|---|
 | Checkout violation detection | 10/10 invalid carts blocked with the right rule |
 | False rejections | 0/5 valid carts |
-| Request parsing (field accuracy) | 26/26 (fallback interpreter, 1 run; reports Gemini when configured) |
+| Request parsing (field accuracy) | 26/26 with live Gemini 3.5 Flash, and 26/26 with the fallback interpreter (1 run each) |
 | Claim classification | 9/9, including 3/3 appropriate abstentions |
 | Remedy policy compliance | 5/5 (duplicate acceptance, overcharge amount, ambiguous → review only, refund always available, sold-out exchange blocked) |
 | End-to-end workflow | 12/12 steps |
