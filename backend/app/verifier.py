@@ -29,6 +29,11 @@ def _check(rule, label, status, observed=None, required=None, explanation="", bl
     }
 
 
+def _day(d: date) -> str:
+    """'Mon Oct 6' without the glibc-only %-d (crashes on Windows)."""
+    return f"{d:%a %b} {d.day}"
+
+
 def active_rules_for(store: BaseStore, product_id: str, size: str) -> list[dict]:
     return [r for r in store.find("rules", {"product_scope": product_id, "status": "approved"})
             if r.get("enabled", True) and r["variant_scope"].get("size") == size]
@@ -91,6 +96,18 @@ def verify(store: BaseStore, req: dict, proposal: dict, shopper_id: str, *, appl
     checks.append(_check("QUANTITY", "Quantity", PASS if ok else FAIL, qty, req.get("quantity", 1),
                          "Matches the quantity you confirmed." if ok else "Quantity differs from what you confirmed."))
 
+    if not product["delivery_options"]:
+        # Platform-synced products (e.g. Shopify): shipping/tax are only known at the store's checkout.
+        # Merchandise alone is a lower bound on the charge, so it can still prove a budget violation.
+        merch = product["price_cents"] * qty
+        if req.get("max_charge_cents") is not None and merch > req["max_charge_cents"]:
+            checks.append(_check("BUDGET", "Within your maximum charge", FAIL, f"{fmt_cents(merch)} before shipping & tax",
+                                 f"≤ {fmt_cents(req['max_charge_cents'])}", "The item price alone exceeds your limit."))
+        checks.append(_check("TOTAL_UNKNOWN", "Total charge known", FAIL, "shipping and tax calculated at checkout",
+                             "a verifiable total", "PerkPilot cannot verify this total yet; the store's checkout calculates it."))
+        return {"status": FAIL, "checks": checks, "price_breakdown": None, "options": [], "recommended_option": None,
+                "guidance": [], "estimated_delivery_date": None}
+
     # ---- payment method
     shopper = store.get("shoppers", shopper_id) or {}
     pm = store.get("payment_methods", proposal["payment_method_id"])
@@ -150,9 +167,9 @@ def verify(store: BaseStore, req: dict, proposal: dict, shopper_id: str, *, appl
         deadline = date.fromisoformat(req["deadline_date"])
         ok = est <= deadline
         checks.append(_check("DELIVERY_DEADLINE", "Arrives by your deadline", PASS if ok else FAIL,
-                             f"est. {est.strftime('%a %b %-d')}", f"by {deadline.strftime('%a %b %-d')}",
+                             f"est. {_day(est)}", f"by {_day(deadline)}",
                              f"{ship['label']} is estimated to arrive {est.strftime('%A')}." if ok else
-                             f"{ship['label']} is estimated to arrive {est.strftime('%A %b %-d')}, after your deadline."))
+                             f"{ship['label']} is estimated to arrive {est:%A %b} {est.day}, after your deadline."))
 
     if bd["later_statement_credit_cents"]:
         checks.append(_check("CREDIT_TIMING", "Statement credit timing", INFO, fmt_cents(bd["later_statement_credit_cents"]) + " later",

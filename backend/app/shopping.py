@@ -108,6 +108,18 @@ def _evaluate_candidates(store: BaseStore, req: dict, shopper_id: str, pm: str, 
                                "price_cents": product["price_cents"], "best_option": None})
             continue
         base = {"shipping_option": "standard", "payment_method_id": pm}
+        if not product["delivery_options"]:
+            # Platform product: verify everything knowable here, then hand off to the store's own checkout for the total.
+            res = verify(store, req, {**base, "product_id": product["product_id"], "variant_id": variant["variant_id"],
+                                      "quantity": req.get("quantity", 1), "coupon_codes": [], "card_offer_ids": []},
+                         shopper_id, apply_learned_rules=apply_learned_rules, with_options=False)
+            fails = [c for c in res["checks"] if c["status"] == FAIL and c["rule"] != "TOTAL_UNKNOWN"]
+            candidates.append({"product_id": product["product_id"], "name": product["name"], "eligible": False,
+                               "reasons": [c["explanation"] for c in fails] or
+                                          ["Size, color, stock and item price check out. Shipping and tax are calculated at the store's checkout."],
+                               "price_cents": product["price_cents"], "variant_id": variant["variant_id"], "best_option": None,
+                               "checkout_url": None if fails else variant.get("checkout_url")})
+            continue
         opts = build_options(store, req, product, shopper_id, base, apply_learned_rules)
         passing = [o for o in opts if o["status"] == PASS]
         best = passing[0] if passing else (opts[0] if opts else None)
@@ -167,7 +179,7 @@ def recommend(store: BaseStore, intent_id: str, apply_learned_rules: bool = True
         pre = verify(store, req, {**agent, "claimed_charge_cents": None, "claimed_effective_cost_cents": None, "card_offer_ids": []},
                      intent["shopper_id"], apply_learned_rules=apply_learned_rules, with_options=False)
         guidance = pre["guidance"]
-    ranked = eligible + sorted([c for c in candidates if not c["eligible"]], key=lambda c: c["name"])
+    ranked = eligible + sorted([c for c in candidates if not c["eligible"]], key=lambda c: (not c.get("checkout_url"), c["name"]))
     explanation = None
     if agent:
         credit = agent["claimed_charge_cents"] - agent["claimed_effective_cost_cents"]

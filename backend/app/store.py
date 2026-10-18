@@ -155,7 +155,7 @@ class FileStore(MemoryStore):
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if self.path.exists():
             try:
-                raw = json.loads(self.path.read_text())
+                raw = json.loads(self.path.read_text(encoding="utf-8"))
                 for c in COLLECTIONS:
                     self._data[c] = {d[self.id_field]: d for d in raw.get(c, [])}
             except (json.JSONDecodeError, KeyError):
@@ -163,7 +163,7 @@ class FileStore(MemoryStore):
 
     def _persist(self) -> None:
         tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps({c: list(v.values()) for c, v in self._data.items()}, default=str))
+        tmp.write_text(json.dumps({c: list(v.values()) for c, v in self._data.items()}, default=str), encoding="utf-8")
         tmp.replace(self.path)
 
 
@@ -195,12 +195,17 @@ class MongoStore(BaseStore):
             self.db[c].delete_many({})
 
 
-def create_store() -> BaseStore:
+def create_store(live: bool = False) -> BaseStore:
+    """Live mode fails closed: never fork real commerce state into a local snapshot."""
     uri = os.environ.get("MONGODB_URI", "").strip()
+    if live and not uri:
+        raise RuntimeError("PERKPILOT_MODE=live requires MONGODB_URI.")
     if uri:
         try:
             return MongoStore(uri, os.environ.get("MONGODB_DB", "perkpilot"))
         except Exception as exc:  # noqa: BLE001 - fall back loudly, never silently
+            if live:
+                raise
             print(f"[perkpilot] MongoDB unavailable ({exc}); using local file store fallback.")
     data_dir = Path(os.environ.get("PERKPILOT_DATA_DIR", Path(__file__).resolve().parent.parent / "data"))
     return FileStore(data_dir / "demo_state.json")

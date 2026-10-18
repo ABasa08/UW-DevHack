@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -28,10 +30,27 @@ class DomainError(Exception):
         self.detail = detail
 
 
+def load_env() -> None:
+    env = Path(__file__).resolve().parent.parent / ".env"
+    if env.exists():
+        for line in env.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+
+
+def live_mode() -> bool:
+    """PERKPILOT_MODE=live: real clock, no seeding, no simulated payments/refunds/shipping."""
+    return os.environ.get("PERKPILOT_MODE", "demo").strip().lower() == "live"
+
+
 # ---------------------------------------------------------------- clock
 
 
 def now(store: BaseStore) -> datetime:
+    if live_mode():
+        return datetime.now(STORE_TZ)
     meta = store.get("meta", "clock")
     if not meta:
         return DEMO_START

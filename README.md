@@ -66,36 +66,126 @@ Store, catalog, shoppers, prices, tax, coupons, card-linked offer, payment autho
 
 ## Run it
 
-Requirements: **Python 3.10+** and **Node 18+**.
+Requirements: **Python 3.10+**, **Node 18+** and Git. Works on macOS, Linux and Windows.
+
+### Quick start (one command)
 
 ```bash
-./start.sh
+git clone https://github.com/ABasa08/UW-DevHack.git && cd UW-DevHack
+./start.sh          # on Windows, run it from Git Bash
 ```
 
-Or run the two servers by hand:
+`start.sh` creates `backend/.venv`, installs the Python and npm dependencies, and starts the API on port 8000 and the app on port 3000. Open http://localhost:3000. API docs are at http://localhost:8000/docs.
+
+### Manual setup
+
+Backend (terminal 1):
 
 ```bash
-cd backend && python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt
-.venv/bin/uvicorn app.main:app --port 8000
+cd backend
+python -m venv .venv
+# macOS/Linux: source .venv/bin/activate      Windows PowerShell: .venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+python -m uvicorn app.main:app --port 8000
 ```
+
+Frontend (terminal 2):
 
 ```bash
-cd frontend && npm install && npm run dev
+cd frontend
+npm install
+npm run dev
 ```
 
-Open http://localhost:3000. The frontend proxies `/api/*` to `http://127.0.0.1:8000` (override with `PERKPILOT_API_URL`). API docs are at http://localhost:8000/docs.
+The frontend proxies `/api/*` to `http://127.0.0.1:8000`. Set `PERKPILOT_API_URL` to point it at a different backend.
 
-Optional: copy `backend/.env.example` to `backend/.env` and set `GEMINI_API_KEY` and/or `MONGODB_URI`.
+### Configuration (optional)
+
+Copy `backend/.env.example` to `backend/.env`. Every value is optional; the file documents each one.
+
+| Variable | Effect |
+|---|---|
+| `GEMINI_API_KEY` | Live Gemini interpretation. Without it the disclosed fallback interpreter runs. |
+| `MONGODB_URI` | MongoDB persistence. Without it state is saved to `backend/data/demo_state.json`. |
+| `PERKPILOT_MODE=live` | Real clock, no seed data, simulated payment/refund/shipping routes removed. Requires `MONGODB_URI` and `PERKPILOT_ADMIN_TOKEN` (bearer token for `/api/merchant/*` and `/api/eval/*`). |
+| `SHOPIFY_*` | Shopify catalog sync. See the next section. |
 
 ### Tests
 
 ```bash
-cd backend && .venv/bin/python -m pytest -q
+cd backend
+python -m pytest -q     # use the venv's python: .venv/bin/python or .venv\Scripts\python
+cd ../frontend && npm run typecheck && npm run build
 ```
 
-There are 25 tests. They include all 16 required acceptance tests from the spec (correct product, wrong variant, budget, coupon-vs-card-offer threshold, expired promo, missed deadline, approval required, changed amount after approval, wrong delivery, ambiguous fit, exchange verification, duplicate remedy, rule approval gating, learning loop, persistence across restarts, demo reset). They also cover tamper detection, shopper isolation, missing-field handling and the sandboxed evaluation. Tests force the deterministic interpreter, so they never call a live model.
+The backend has 34 tests. They include all 16 required acceptance tests from the spec: correct product, wrong variant, budget, coupon-vs-card-offer threshold, expired promo, missed deadline, approval required, changed amount after approval, wrong delivery, ambiguous fit, exchange verification, duplicate remedy, rule approval gating, learning loop, persistence across restarts, and demo reset. They also cover tamper detection, shopper isolation, missing-field handling, the sandboxed evaluation, live-mode isolation, and the Shopify adapter (pagination, currency guard, both auth methods, mapping/skip/archive, fail-closed verification, and the checkout handoff). Tests force the deterministic interpreter and mock Shopify's HTTP API, so they never call a live model or store.
 
-### Evaluation (Merchant console → Evaluation)
+---
+
+## Add PerkPilot to an existing Shopify store
+
+PerkPilot reads your Shopify catalog, and a floating assistant on your storefront helps shoppers pick the right product. Shopify still owns the cart, checkout, payments and orders. When PerkPilot finds a match, the shopper continues to **your normal Shopify checkout**. PerkPilot verifies everything it can know (product type, brand, color, size, stock, and item price against the shopper's budget). It never claims to verify shipping or tax, because only Shopify's checkout calculates them. For those products it shows "Continue to store checkout" in place of its own simulated checkout.
+
+You need a Shopify store with an Online Store theme, USD pricing, and footwear-style variants: a numeric **Size** option (e.g. `10`, `10.5`) and, optionally, a **Color** option. Products that don't fit are skipped and listed in the sync output, never guessed.
+
+### 1. Create a Shopify app with read access
+
+1. In the [Shopify Dev Dashboard](https://dev.shopify.com/dashboard), create an app in the same organization as your store.
+2. Configure Admin API access scopes `read_products` and `read_inventory`, release a version, and install the app on your store.
+3. Copy the app's **Client ID** and **Client secret** from its settings.
+
+Already have a legacy custom app with an Admin API token (`shpat_...`)? You can use that token instead.
+
+### 2. Configure and sync the catalog
+
+In `backend/.env`:
+
+```bash
+SHOPIFY_SHOP=your-store.myshopify.com
+SHOPIFY_CLIENT_ID=...
+SHOPIFY_CLIENT_SECRET=...
+# or: SHOPIFY_ADMIN_TOKEN=shpat_...
+# If your options are named differently: SHOPIFY_SIZE_OPTION=Shoe size  SHOPIFY_COLOR_OPTION=Colour
+```
+
+Then, from `backend/` with the venv active:
+
+```bash
+python -m app.shopify sync --only-shopify
+# synced 12, skipped 1, archived 6
+#   skipped 'Gift Card': no variants with a numeric 'Size' option
+```
+
+`--only-shopify` archives the fictional StrideLab demo catalog so shoppers see only your products. Drop the flag to keep both. The sync is a one-way, repeatable projection: re-run it whenever your catalog changes (a cron job works). Products removed from Shopify are archived, never deleted. The demo **Reset** button re-seeds the demo data, so re-run the sync after using it.
+
+### 3. Deploy PerkPilot
+
+Host the backend and frontend anywhere that runs Python and Node, for example Render, Railway, Fly.io or a VM:
+
+- Backend: `pip install -r requirements.txt && python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT`, with `MONGODB_URI` set so state survives redeploys.
+- Frontend: `npm install && npm run build && npm start`, with `PERKPILOT_API_URL` set to the backend's URL.
+
+The frontend must be served over HTTPS, because Shopify storefronts won't load an `http://` iframe.
+
+### 4. Add the assistant to your theme
+
+1. Open **Online Store → Themes → Customize**.
+2. In the **Footer** group, click **Add section → Custom Liquid**.
+3. Paste the contents of [`shopify/perkpilot-embed.liquid`](shopify/perkpilot-embed.liquid) and replace `https://YOUR-PERKPILOT-FRONTEND` with your frontend URL.
+4. Save. A **Shopping assistant** button now appears at the bottom-right of every page.
+
+The button opens `https://<your-frontend>/embed`, which is the assistant without the demo chrome. You can preview that URL directly. To remove PerkPilot, delete the Custom Liquid section; nothing else in your theme changes.
+
+### What the Shopify pilot does not do yet
+
+- Shoppers in the embed use the demo shopper identity; Shopify customer accounts aren't linked yet.
+- The merchant console's returns and learning features run on PerkPilot's own claims. Shopify orders and returns aren't imported yet.
+- Inventory and prices are only as fresh as the last sync; there are no webhooks yet.
+- Single store, USD only, one price per product.
+
+[SHOPIFY_INTEGRATION_REPORT.md](SHOPIFY_INTEGRATION_REPORT.md) covers the full production roadmap: theme app extension, checkout enforcement, order and return webhooks, and authenticated merchant sessions.
+
+## Evaluation (Merchant console → Evaluation)
 
 Each run seeds an isolated in-memory copy of the store, so live demo data is never touched. It reports exact counts:
 
@@ -156,6 +246,8 @@ backend/app/
   evaluation.py   Sandboxed labeled-fixture evaluation runs
   fixtures.py     Seeded StrideLab data (deterministic IDs)
   store.py        MongoDB or local JSON-file persistence
-backend/tests/    Acceptance tests
-frontend/app/     Next.js App Router pages (shopper + /merchant)
+  shopify.py      Read-only Shopify catalog sync (python -m app.shopify sync)
+backend/tests/    Acceptance, live-mode and Shopify adapter tests
+frontend/app/     Next.js App Router pages (shopper, /merchant, and /embed for storefronts)
+shopify/          Theme snippet that embeds the assistant in a Shopify store
 ```

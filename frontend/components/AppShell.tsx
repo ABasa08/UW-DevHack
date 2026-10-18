@@ -123,6 +123,7 @@ function NavLink({ href, children, exact }: { href: string; children: ReactNode;
 export default function AppShell({ children }: { children: ReactNode }) {
   const path = usePathname();
   const merchant = path.startsWith("/merchant");
+  if (path.startsWith("/embed")) return <main className="min-h-screen bg-paper p-4">{children}</main>;
   return (
     <div className="min-h-screen bg-paper">
       <DemoBar />

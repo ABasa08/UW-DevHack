@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Starts the PerkPilot backend (port 8000) and frontend (port 3000). Ctrl+C stops both.
+# Works on macOS, Linux and Git Bash on Windows.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 
@@ -21,17 +22,18 @@ if [ "$busy" = 1 ]; then
 fi
 
 # Python 3.10+ is required.
-PY="$(command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3.10 || command -v python3)"
+PY="$(command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3.10 || command -v python3 || command -v python)"
 if [ ! -d "$ROOT/backend/.venv" ]; then
   "$PY" -m venv "$ROOT/backend/.venv"
-  "$ROOT/backend/.venv/bin/pip" install -q -r "$ROOT/backend/requirements.txt"
 fi
+BIN="$ROOT/backend/.venv/bin"; [ -d "$BIN" ] || BIN="$ROOT/backend/.venv/Scripts"   # Windows venv layout
+"$BIN/python" -m pip install -q -r "$ROOT/backend/requirements.txt"
 if [ ! -d "$ROOT/frontend/node_modules" ]; then
   npm --prefix "$ROOT/frontend" install --no-audit --no-fund
 fi
 
 # --reload restarts the API automatically when backend code changes.
-(cd "$ROOT/backend" && exec .venv/bin/uvicorn app.main:app --port 8000 --reload --reload-dir app) &
+(cd "$ROOT/backend" && exec "$BIN/python" -m uvicorn app.main:app --port 8000 --reload --reload-dir app) &
 BACK=$!
 trap 'kill $BACK 2>/dev/null' EXIT
 

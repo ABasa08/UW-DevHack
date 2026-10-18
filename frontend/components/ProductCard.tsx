@@ -11,6 +11,10 @@ export function colorsOf(product: any): { color: string; hex: string }[] {
 export function ProductImage({ product, color, className = "" }: { product: any; color?: string; className?: string }) {
   const colors = colorsOf(product);
   const hex = colors.find((c) => c.color === color)?.hex ?? colors[0]?.hex;
+  if (product.image.url) {
+    // eslint-disable-next-line @next/next/no-img-element -- Shopify CDN image, no next/image domain config needed
+    return <img src={product.image.url} alt={product.name} className={`rounded-xl bg-white object-contain ${className}`} />;
+  }
   return (
     <div
       className={`flex items-center justify-center rounded-xl ${className}`}
@@ -38,7 +42,7 @@ export default function ProductCard({ product }: { product: any }) {
         {colors.map((c) => (
           <span key={c.color} title={c.color} className="h-3.5 w-3.5 rounded-full border border-black/10" style={{ background: c.hex }} />
         ))}
-        <span className="ml-auto text-xs text-ink-mute">★ {product.rating} · {stock} in stock</span>
+        <span className="ml-auto text-xs text-ink-mute">{product.rating != null && <>★ {product.rating} · </>}{stock} in stock</span>
       </div>
     </Link>
   );

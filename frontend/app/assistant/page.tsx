@@ -86,7 +86,7 @@ function AssistantInner() {
       setIntent(it);
       setDraft(it.parsed_requirements);
       setEditing(true);
-      router.replace(`/assistant?intent=${it.intent_id}`);
+      router.replace(`${window.location.pathname}?intent=${it.intent_id}`);
     } catch (e) {
       setError(e);
     } finally {
@@ -274,6 +274,7 @@ function Recommendations({ recs, busy, applyRules, onToggleRules, onReviewSize, 
   const [dismissed, setDismissed] = useState(false);
   const others = recs.candidates.filter((c: any) => c.product_id !== top?.product_id);
   const credit = agent ? agent.claimed_charge_cents - agent.claimed_effective_cost_cents : 0;
+  const handoff = recs.candidates.some((c: any) => c.checkout_url);
 
   return (
     <>
@@ -295,34 +296,43 @@ function Recommendations({ recs, busy, applyRules, onToggleRules, onReviewSize, 
 
       {!top ? (
         <Card className="p-6">
-          <p className="font-medium">No product satisfies every requirement you confirmed.</p>
-          {recs.notices?.map((n: string) => (
-            <p key={n} className="mt-3 rounded-lg bg-info-soft px-3 py-2 text-sm text-info">{n}</p>
-          ))}
-          {recs.relaxations?.length > 0 ? (
-            <div className="mt-4 space-y-2">
-              <p className="text-sm text-ink-soft">These changes would find something. Nothing changes unless you pick one:</p>
-              {recs.relaxations.map((r: any) => (
-                <div key={r.label} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-paper-line px-4 py-3">
-                  <p className="text-sm">
-                    <span className="font-medium">{r.label}</span>
-                    <span className="text-ink-mute"> · {r.count} match{r.count > 1 ? "es" : ""}, from {r.finds} at {money(r.charge_cents)}</span>
-                  </p>
-                  <Button size="sm" variant="secondary" loading={busy === "confirm"} disabled={disabled} onClick={() => onRelax(r)}>
-                    {r.label}
-                  </Button>
-                </div>
-              ))}
-            </div>
+          {handoff ? (
+            <>
+              <p className="font-medium">These products match what you confirmed.</p>
+              <p className="mt-1 text-sm text-ink-mute">PerkPilot checked size, color, stock and item price. Shipping and tax are calculated at the store's checkout, so finish there.</p>
+            </>
           ) : (
-            <p className="mt-2 text-sm text-ink-mute">
-              Nothing in the catalog matches even with fewer filters. Try a different size, budget or product type.
-            </p>
+            <>
+              <p className="font-medium">No product satisfies every requirement you confirmed.</p>
+              {recs.notices?.map((n: string) => (
+                <p key={n} className="mt-3 rounded-lg bg-info-soft px-3 py-2 text-sm text-info">{n}</p>
+              ))}
+              {recs.relaxations?.length > 0 ? (
+                <div className="mt-4 space-y-2">
+                  <p className="text-sm text-ink-soft">These changes would find something. Nothing changes unless you pick one:</p>
+                  {recs.relaxations.map((r: any) => (
+                    <div key={r.label} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-paper-line px-4 py-3">
+                      <p className="text-sm">
+                        <span className="font-medium">{r.label}</span>
+                        <span className="text-ink-mute"> · {r.count} match{r.count > 1 ? "es" : ""}, from {r.finds} at {money(r.charge_cents)}</span>
+                      </p>
+                      <Button size="sm" variant="secondary" loading={busy === "confirm"} disabled={disabled} onClick={() => onRelax(r)}>
+                        {r.label}
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="mt-2 text-sm text-ink-mute">
+                  Nothing in the catalog matches even with fewer filters. Try a different size, budget or product type.
+                </p>
+              )}
+              <div className="mt-4 flex items-center gap-3">
+                <Button size="sm" variant="ghost" onClick={onEdit}>Edit requirements</Button>
+                <span className="text-xs text-ink-mute">Below: why each product was ruled out.</span>
+              </div>
+            </>
           )}
-          <div className="mt-4 flex items-center gap-3">
-            <Button size="sm" variant="ghost" onClick={onEdit}>Edit requirements</Button>
-            <span className="text-xs text-ink-mute">Below: why each product was ruled out.</span>
-          </div>
         </Card>
       ) : (
         <Card className="overflow-hidden">
@@ -396,6 +406,13 @@ function Recommendations({ recs, busy, applyRules, onToggleRules, onReviewSize, 
                       onClick={() => onVerify({ ...c.best_option.proposal, source: "shopper" })}>
                       Verify this instead
                     </button>
+                  </>
+                ) : c.checkout_url ? (
+                  <>
+                    <Badge tone="pass">Matches · {money(c.price_cents)} + shipping &amp; tax</Badge>
+                    <a href={c.checkout_url} target="_top" rel="noopener" className="ml-auto text-sm font-medium underline-offset-2 hover:underline">
+                      Continue to store checkout →
+                    </a>
                   </>
                 ) : (
                   <>

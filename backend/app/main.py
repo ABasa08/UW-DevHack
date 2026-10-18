@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
+import secrets
 
 from fastapi import FastAPI, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 
 from . import demo, learning, metrics, resolution, shopping
 from .ai import ai_status
-from .core import MERCHANT_ID, DomainError, now
+from .core import MERCHANT_ID, DomainError, live_mode, load_env, now
 from .evaluation import run_evaluation
 from .fixtures import seed
 from .models import (AdvanceRequest, CheckoutConfirmRequest, ClaimRequest, ClarifyRequest, ConfirmIntentRequest, OutcomeRequest,
@@ -22,28 +22,35 @@ from .store import BaseStore, create_store
 from .verifier import active_rules_for
 
 
-def _load_env() -> None:
-    env = Path(__file__).resolve().parent.parent / ".env"
-    if env.exists():
-        for line in env.read_text().splitlines():
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                k, v = line.split("=", 1)
-                os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
-
-
 class PriceChange(BaseModel):
     price_cents: int = Field(ge=100, le=1_000_00)
 
 
 def create_app(store: BaseStore | None = None) -> FastAPI:
-    _load_env()
+    load_env()
+    demo_mode = not live_mode()
     app = FastAPI(title="PerkPilot API", version="1.0.0",
-                  description="Verified AI commerce demo. All payments, refunds and shipments are simulated.")
-    app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
-    app.state.store = store or create_store()
-    if not app.state.store.get("meta", "seed_info"):
+                  description="Verified AI commerce demo. All payments, refunds and shipments are simulated." if demo_mode else
+                  "Verified AI commerce assistant (live mode: no simulated payments, refunds or shipping).")
+    origins = ["*"] if demo_mode else [o.strip() for o in os.environ.get("PERKPILOT_ALLOWED_ORIGINS", "").split(",") if o.strip()]
+    app.add_middleware(CORSMiddleware, allow_origins=origins, allow_methods=["*"], allow_headers=["*"])
+    app.state.store = store or create_store(live=not demo_mode)
+    if demo_mode and not app.state.store.get("meta", "seed_info"):
         seed(app.state.store)
+
+    if not demo_mode:
+        admin_token = os.environ.get("PERKPILOT_ADMIN_TOKEN", "")
+        if not admin_token:
+            raise RuntimeError("PERKPILOT_MODE=live requires PERKPILOT_ADMIN_TOKEN.")
+
+        # ponytail: one shared merchant bearer token; replace with Shopify Admin session auth before multi-staff use.
+        @app.middleware("http")
+        async def _merchant_auth(request: Request, call_next):
+            if request.url.path.startswith(("/api/merchant", "/api/eval")) and request.method != "OPTIONS":
+                given = request.headers.get("authorization", "").removeprefix("Bearer ")
+                if not secrets.compare_digest(given.encode(), admin_token.encode()):
+                    return JSONResponse(status_code=401, content={"error": {"code": "unauthorized", "message": "Merchant authentication required."}})
+            return await call_next(request)
 
     def S() -> BaseStore:
         return app.state.store
@@ -56,23 +63,11 @@ def create_app(store: BaseStore | None = None) -> FastAPI:
 
     @app.get("/api/health")
     def health():
-        return {"ok": True, "store": S().mode, "ai": ai_status(), "now": now(S()).isoformat()}
+        return {"ok": True, "mode": "demo" if demo_mode else "live", "store": S().mode, "ai": ai_status(), "now": now(S()).isoformat()}
 
-    @app.get("/api/demo/state")
-    def demo_state():
-        s = S()
-        return {"now": now(s).isoformat(), "timezone": "America/Los_Angeles", "store": s.mode, "ai": ai_status(),
-                "merchant": s.get("merchants", MERCHANT_ID), "shoppers": s.find("shoppers"),
-                "payment_methods": s.find("payment_methods"),
-                "disclosure": "Simulated store, shoppers, payments, refunds and shipping. No real money moves."}
-
-    @app.post("/api/demo/reset")
-    def demo_reset():
-        return demo.reset(S())
-
-    @app.post("/api/demo/advance")
-    def demo_advance(body: AdvanceRequest):
-        return demo.advance(S(), body.days, body.hours, body.until, body.purchase_id)
+    # Demo controls and every simulated money/fulfilment effect exist only in demo mode.
+    if demo_mode:
+        register_demo_routes(app, S)
 
     # ------------------------------------------------------------ catalog
 
@@ -93,10 +88,6 @@ def create_app(store: BaseStore | None = None) -> FastAPI:
                            for r in active_rules_for(S(), product_id, size)] for size in sizes}
         offers = [o for o in S().find("offers") if o["status"] == "active" and (not o["eligible_products"] or product_id in o["eligible_products"])]
         return {"product": p, "guidance_by_size": {k: v for k, v in guidance.items() if v}, "offers": offers}
-
-    @app.post("/api/merchant/products/{product_id}/price")
-    def change_price(product_id: str, body: PriceChange):
-        return demo.change_price(S(), product_id, body.price_cents)
 
     # ------------------------------------------------------------ shopping
 
@@ -126,10 +117,6 @@ def create_app(store: BaseStore | None = None) -> FastAPI:
         return {"quote": q, "intent": shopping.get_intent(S(), q["intent_id"]),
                 "product": S().get("products", q["proposal"]["product_id"]),
                 "payment_method": S().get("payment_methods", q["proposal"]["payment_method_id"])}
-
-    @app.post("/api/checkout/confirm")
-    def checkout_confirm(body: CheckoutConfirmRequest):
-        return shopping.confirm_checkout(S(), body.quote_id, body.shopper_id, body.approved_charge_cents, body.shopper_approved)
 
     # ------------------------------------------------------------ purchases
 
@@ -182,11 +169,6 @@ def create_app(store: BaseStore | None = None) -> FastAPI:
         res = resolution.confirm_outcome(S(), claim_id, body.shopper_id, body.outcome)
         return {**resolution.claim_view(S(), claim_id), "rule_proposal": res["rule_proposal"]}
 
-    @app.post("/api/remedies/{remedy_id}/accept")
-    def remedy_accept(remedy_id: str, body: RemedyAcceptRequest):
-        res = resolution.accept_remedy(S(), remedy_id, body.shopper_id, body.confirm, body.idempotency_key, body.payout_method)
-        return {**resolution.claim_view(S(), res["claim"]["claim_id"]), "duplicate": res["duplicate"], "message": res.get("message")}
-
     # ------------------------------------------------------------ merchant
 
     @app.get("/api/merchant/rules")
@@ -224,6 +206,40 @@ def create_app(store: BaseStore | None = None) -> FastAPI:
         return {"run": runs[0] if runs else None}
 
     return app
+
+
+
+def register_demo_routes(app: FastAPI, S) -> None:
+    """Reset/clock/price scenarios plus simulated checkout payment and remedy execution."""
+
+    @app.get("/api/demo/state")
+    def demo_state():
+        s = S()
+        return {"now": now(s).isoformat(), "timezone": "America/Los_Angeles", "store": s.mode, "ai": ai_status(),
+                "merchant": s.get("merchants", MERCHANT_ID), "shoppers": s.find("shoppers"),
+                "payment_methods": s.find("payment_methods"),
+                "disclosure": "Simulated store, shoppers, payments, refunds and shipping. No real money moves."}
+
+    @app.post("/api/demo/reset")
+    def demo_reset():
+        return demo.reset(S())
+
+    @app.post("/api/demo/advance")
+    def demo_advance(body: AdvanceRequest):
+        return demo.advance(S(), body.days, body.hours, body.until, body.purchase_id)
+
+    @app.post("/api/merchant/products/{product_id}/price")
+    def change_price(product_id: str, body: PriceChange):
+        return demo.change_price(S(), product_id, body.price_cents)
+
+    @app.post("/api/checkout/confirm")
+    def checkout_confirm(body: CheckoutConfirmRequest):
+        return shopping.confirm_checkout(S(), body.quote_id, body.shopper_id, body.approved_charge_cents, body.shopper_approved)
+
+    @app.post("/api/remedies/{remedy_id}/accept")
+    def remedy_accept(remedy_id: str, body: RemedyAcceptRequest):
+        res = resolution.accept_remedy(S(), remedy_id, body.shopper_id, body.confirm, body.idempotency_key, body.payout_method)
+        return {**resolution.claim_view(S(), res["claim"]["claim_id"]), "duplicate": res["duplicate"], "message": res.get("message")}
 
 
 app = create_app()
