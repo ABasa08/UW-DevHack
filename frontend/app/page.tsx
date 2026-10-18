@@ -76,7 +76,7 @@ export default function Storefront() {
         <div className="mb-5 flex items-end justify-between">
           <div>
             <Eyebrow>Catalog</Eyebrow>
-            <h2 className="font-display text-2xl font-semibold">Shop all footwear</h2>
+            <h2 className="font-display text-2xl font-semibold">Shop all</h2>
           </div>
         </div>
         {products.loading && !products.data ? (

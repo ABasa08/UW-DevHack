@@ -7,7 +7,7 @@ import { useDemo } from "@/components/DemoProvider";
 import { ProductImage } from "@/components/ProductCard";
 import { Button, Card, ErrorBox, Eyebrow, Loading } from "@/components/ui";
 import { ApiError, api } from "@/lib/api";
-import { dayLabel, money } from "@/lib/format";
+import { dayLabel, money, sizeLabel } from "@/lib/format";
 import { useLoad } from "@/lib/hooks";
 
 const EXAMPLES = ["These shoes feel too tight.", "They sent the wrong color.", "I was charged more than I approved.", "This isn't what I expected."];
@@ -49,7 +49,7 @@ export default function ReportPage() {
       <Card className="flex items-center gap-4 p-4">
         <ProductImage product={product} color={p.color} className="h-16 w-20 shrink-0" />
         <div className="text-sm">
-          <p className="font-medium">{p.product_name} · <span className="capitalize">{p.color}</span> · US {p.size}</p>
+          <p className="font-medium">{p.product_name} · <span className="capitalize">{p.color}</span> · {sizeLabel(p.size)}</p>
           <p className="text-ink-mute">
             {p.purchase_id} · {money(p.approved_charge_cents)} · {shipment?.delivered_at ? `delivered ${dayLabel(shipment.actual_delivery_date)}` : "not delivered yet"}
           </p>

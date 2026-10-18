@@ -11,7 +11,7 @@ from datetime import date
 from itertools import product as cartesian
 
 from .core import fmt_cents, now
-from .pricing import estimate_delivery, find_shipping, find_variant, offer_by_code, price_cart
+from .pricing import estimate_delivery, find_shipping, find_variant, offer_by_code, price_cart, size_label, unit_price
 from .store import BaseStore
 
 PASS, FAIL, WARN, INFO = "PASS", "FAIL", "WARN", "INFO"
@@ -86,7 +86,7 @@ def verify(store: BaseStore, req: dict, proposal: dict, shopper_id: str, *, appl
                                  "Matches your color." if ok else f"Proposed {variant['color']}, but you confirmed {req['color']}."))
         if req.get("size"):
             ok = variant["size"] == req["size"]
-            checks.append(_check("SIZE", "Size", PASS if ok else FAIL, f"US {variant['size']}", f"US {req['size']}",
+            checks.append(_check("SIZE", "Size", PASS if ok else FAIL, size_label(variant["size"]), size_label(req["size"]),
                                  "Matches your confirmed size." if ok else f"Proposed size {variant['size']}, but you confirmed size {req['size']}."))
         stock = product["inventory_by_variant"].get(variant["variant_id"], 0)
         ok = stock >= qty
@@ -99,7 +99,7 @@ def verify(store: BaseStore, req: dict, proposal: dict, shopper_id: str, *, appl
     if not product["delivery_options"]:
         # Platform-synced products (e.g. Shopify): shipping/tax are only known at the store's checkout.
         # Merchandise alone is a lower bound on the charge, so it can still prove a budget violation.
-        merch = product["price_cents"] * qty
+        merch = unit_price(product, variant) * qty
         if req.get("max_charge_cents") is not None and merch > req["max_charge_cents"]:
             checks.append(_check("BUDGET", "Within your maximum charge", FAIL, f"{fmt_cents(merch)} before shipping & tax",
                                  f"≤ {fmt_cents(req['max_charge_cents'])}", "The item price alone exceeds your limit."))

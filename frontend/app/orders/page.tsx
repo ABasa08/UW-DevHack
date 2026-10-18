@@ -5,7 +5,7 @@ import { useDemo } from "@/components/DemoProvider";
 import { ProductImage } from "@/components/ProductCard";
 import { Badge, Button, Empty, ErrorBox, Eyebrow, Loading } from "@/components/ui";
 import { api } from "@/lib/api";
-import { CLASSIFICATION_LABELS, STATUS_LABELS, dayLabel, money } from "@/lib/format";
+import { CLASSIFICATION_LABELS, dayLabel, money, sizeLabel, STATUS_LABELS } from "@/lib/format";
 import { useLoad } from "@/lib/hooks";
 
 export default function OrdersPage() {
@@ -48,7 +48,7 @@ export default function OrdersPage() {
                     {o.kind === "exchange" && <Badge tone="info">Exchange order</Badge>}
                     {o.source === "seed" && <Badge>Seeded scenario</Badge>}
                   </div>
-                  <p className="text-sm capitalize text-ink-mute">{o.color} · US {o.size} · {o.purchase_id}</p>
+                  <p className="text-sm capitalize text-ink-mute">{o.color} · {sizeLabel(o.size)} · {o.purchase_id}</p>
                   <p className="mt-1 text-xs text-ink-mute">
                     {o.shipment?.delivered_at ? `Delivered ${dayLabel(o.shipment.actual_delivery_date)}` : `Arrives by ${dayLabel(o.approved_delivery_date)}`}
                   </p>

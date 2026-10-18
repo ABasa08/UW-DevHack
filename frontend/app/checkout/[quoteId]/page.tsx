@@ -8,7 +8,7 @@ import { ProductImage } from "@/components/ProductCard";
 import CheckList from "@/components/CheckList";
 import { Badge, Button, Card, ErrorBox, Eyebrow, KV, Loading, SimLabel, cx } from "@/components/ui";
 import { ApiError, api } from "@/lib/api";
-import { dayLabel, money } from "@/lib/format";
+import { dayLabel, money, sizeLabel } from "@/lib/format";
 import { useLoad } from "@/lib/hooks";
 
 function OptionCard({ o, recommended, onUse, busy, maxCharge }: { o: any; recommended: boolean; onUse: () => void; busy: boolean; maxCharge: number | null }) {
@@ -164,7 +164,7 @@ export default function CheckoutPage() {
                 <ProductImage product={product} color={variant?.color} className="h-24 w-28 shrink-0" />
                 <div className="text-sm">
                   <p className="font-medium">{product.name}</p>
-                  <p className="capitalize text-ink-mute">{variant?.color} · US {variant?.size} · qty {quote.proposal.quantity}</p>
+                  <p className="capitalize text-ink-mute">{variant?.color} · {sizeLabel(variant?.size)} · qty {quote.proposal.quantity}</p>
                   <p className="mt-1 text-ink-mute">Coupons: {quote.proposal.coupon_codes.join(", ") || "none"}</p>
                 </div>
               </div>
@@ -226,7 +226,7 @@ export default function CheckoutPage() {
                 <ProductImage product={product} color={variant?.color} className="h-28 w-32 shrink-0" />
                 <div>
                   <p className="font-display text-xl font-semibold">{product.name}</p>
-                  <p className="capitalize text-ink-mute">{variant?.color} · US {variant?.size} · qty {quote.proposal.quantity}</p>
+                  <p className="capitalize text-ink-mute">{variant?.color} · {sizeLabel(variant?.size)} · qty {quote.proposal.quantity}</p>
                   <p className="mt-2 text-sm">
                     Arrives by <b>{dayLabel(r.estimated_delivery_date)}</b> · {bd.shipping_label}
                   </p>
@@ -275,7 +275,7 @@ export default function CheckoutPage() {
                   <input type="checkbox" className="mt-1 h-4 w-4" checked={approved} onChange={(e) => setApproved(e.target.checked)} />
                   <span>
                     I approve a one-time <b>simulated</b> charge of <b>{money(bd.charge_cents)}</b> to {payment_method.label} for {product.name},{" "}
-                    <span className="capitalize">{variant?.color}</span>, US {variant?.size}, arriving by {dayLabel(r.estimated_delivery_date)}.
+                    <span className="capitalize">{variant?.color}</span>, {sizeLabel(variant?.size)}, arriving by {dayLabel(r.estimated_delivery_date)}.
                   </span>
                 </label>
                 <Button className="mt-4 w-full" size="lg" disabled={!approved} loading={busy === "order"} onClick={placeOrder}>

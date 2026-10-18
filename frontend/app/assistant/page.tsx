@@ -7,7 +7,7 @@ import { ProductImage } from "@/components/ProductCard";
 import RequirementsForm, { type Req } from "@/components/RequirementsForm";
 import { Badge, Button, Card, ErrorBox, Eyebrow, Loading, SimLabel, Spinner, cx } from "@/components/ui";
 import { api } from "@/lib/api";
-import { CATEGORY_LABELS, dayLabel, money } from "@/lib/format";
+import { categoryLabel, dayLabel, money, sizeLabel } from "@/lib/format";
 
 const EXAMPLES = [
   "Find black running shoes in size 10, under $120 including shipping and tax, delivered by Friday.",
@@ -28,9 +28,9 @@ function Interpreter({ meta }: { meta: any }) {
 
 function ReqSummary({ req, onEdit, version }: { req: Req; onEdit: () => void; version: number }) {
   const bits = [
-    req.category && CATEGORY_LABELS[req.category],
+    req.category && categoryLabel(req.category),
     req.color && <span className="capitalize">{req.color}</span>,
-    req.size && `US ${req.size}`,
+    req.size && sizeLabel(req.size),
     req.max_charge_cents !== null && `≤ ${money(req.max_charge_cents)} ${req.budget_includes_shipping_and_tax ? "total charge" : "before shipping/tax"}`,
     req.deadline_date ? `by ${dayLabel(req.deadline_date)}` : "no deadline",
     req.quantity > 1 && `qty ${req.quantity}`,
@@ -230,7 +230,7 @@ function AssistantInner() {
               <Button
                 onClick={() => confirm(draft, intent.confirmed_requirements ? "edited by shopper" : undefined)}
                 loading={busy === "confirm"}
-                disabled={!draft.category || !draft.size || draft.max_charge_cents === null || purchased}
+                disabled={!draft.category || draft.max_charge_cents === null || purchased}
               >
                 Confirm requirements
               </Button>
@@ -363,7 +363,7 @@ function Recommendations({ recs, busy, applyRules, onToggleRules, onReviewSize, 
                 {!applyRules && <Badge tone="neutral">Learned guidance off</Badge>}
               </div>
               <h2 className="mt-2 font-display text-2xl font-semibold">{top.name}</h2>
-              <p className="text-sm capitalize text-ink-mute">{recs.confirmed_requirements.color ?? "Any color"} · US {recs.confirmed_requirements.size}</p>
+              <p className="text-sm capitalize text-ink-mute">{recs.confirmed_requirements.color ?? "Any color"} · {sizeLabel(recs.confirmed_requirements.size)}</p>
 
               {agent && (
                 <div className="mt-5 rounded-2xl border border-brand/15 bg-brand-soft/60 p-4">
@@ -394,7 +394,7 @@ function Recommendations({ recs, busy, applyRules, onToggleRules, onReviewSize, 
 
       {others.length > 0 && (
         <div>
-          <p className="mb-2 text-sm font-medium text-ink-soft">Other products considered</p>
+          <p className="mb-2 text-sm font-medium text-ink-soft">{top ? "Other products considered" : "Products considered"}</p>
           <div className="divide-y divide-paper-line rounded-2xl border border-paper-line bg-white">
             {others.map((c: any) => (
               <div key={c.product_id} className="flex flex-wrap items-center gap-3 px-5 py-3 text-sm">

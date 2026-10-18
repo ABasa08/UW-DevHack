@@ -26,6 +26,56 @@ def find_variant(product: dict, variant_id: str) -> dict | None:
     return next((v for v in product["variants"] if v["variant_id"] == variant_id), None)
 
 
+def unit_price(product: dict, variant: dict | None) -> int:
+    """Platform products can price per variant; demo fixtures price per product."""
+    return (variant or {}).get("price_cents", product["price_cents"])
+
+
+def size_label(size: str | None) -> str:
+    """'US 10' for numeric (demo shoe) sizes, the size as-is otherwise."""
+    if not size:
+        return "one size"
+    try:
+        float(size)
+        return f"US {size}"
+    except ValueError:
+        return size
+
+
+def sizes_in_order(product: dict) -> list[str]:
+    """Smallest to largest: numerically when every size is a number, else the merchant's variant order
+    (Shopify lists variants by option position, so S, M, L stays S, M, L)."""
+    sizes = list(dict.fromkeys(v["size"] for v in product["variants"] if v["size"]))
+    try:
+        return sorted(sizes, key=float)
+    except ValueError:
+        return sizes
+
+
+APPAREL_SIZES = ["XXS", "XS", "S", "M", "L", "XL", "XXL", "2XL", "XXXL", "3XL", "4XL", "5XL"]
+
+
+def _size_rank(size: str, first_seen: int) -> tuple:
+    try:
+        return (0, float(size), 0)
+    except ValueError:
+        return (1, APPAREL_SIZES.index(size), 0) if size in APPAREL_SIZES else (2, 0, first_seen)
+
+
+def catalog_facets(store: BaseStore) -> dict:
+    """What the active catalog actually offers; drives the parser, the confirmation form and validation."""
+    products = store.find("products", {"status": "active"})
+    sizes: list[str] = []
+    for p in products:
+        sizes += [s for s in sizes_in_order(p) if s not in sizes]
+    return {
+        "categories": sorted({p["category"] for p in products}),
+        "sized_categories": sorted({p["category"] for p in products if any(v["size"] for v in p["variants"])}),
+        "colors": sorted({v["color"] for p in products for v in p["variants"] if v["color"]}),
+        "sizes": sorted(sizes, key=lambda s: _size_rank(s, sizes.index(s))),  # merged across products, so re-ranked
+    }
+
+
 def find_shipping(product: dict, option_id: str) -> dict | None:
     return next((o for o in product["delivery_options"] if o["id"] == option_id), None)
 

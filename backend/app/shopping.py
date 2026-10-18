@@ -5,7 +5,7 @@ from __future__ import annotations
 from .ai import parse_shopping_request
 from .core import DomainError, MERCHANT_ID, append_event, fmt_cents, next_id, now, sha256_hex, today
 from .models import Requirements
-from .pricing import estimate_delivery, find_variant
+from .pricing import catalog_facets, estimate_delivery, find_variant, size_label, unit_price
 from .records import make_purchase_record, make_shipment, process_shipments
 from .store import BaseStore
 from .verifier import FAIL, PASS, build_options, matching_variant, naive_agent_proposal, verify
@@ -20,7 +20,8 @@ def _shopper(store: BaseStore, shopper_id: str) -> dict:
 
 def parse_intent(store: BaseStore, shopper_id: str, text: str) -> dict:
     _shopper(store, shopper_id)
-    parsed = parse_shopping_request(text, today(store))
+    titles = {p["name"]: p["category"] for p in store.find("products", {"status": "active"})}
+    parsed = parse_shopping_request(text, today(store), {**catalog_facets(store), "titles": titles})
     brand = parsed["requirements"].get("brand")
     if brand and not any(brand_matches(p["brand"], brand) for p in store.find("products", {"status": "active"})):
         parsed["notes"].append(f"StrideLab Running doesn't carry {brand}. Brands available here: {', '.join(carried_brands(store))}. "
@@ -50,7 +51,13 @@ def confirm_intent(store: BaseStore, intent_id: str, req: Requirements, change_r
     intent = get_intent(store, intent_id)
     if intent["status"] == "purchased":
         raise DomainError("This request already resulted in a purchase. Start a new request to shop again.", 409, "invalid_state")
-    missing = [f for f in ("category", "size", "max_charge_cents") if getattr(req, f) is None]
+    facets = catalog_facets(store)
+    if req.category and req.category not in facets["categories"]:
+        raise DomainError(f"This store doesn't sell '{req.category}'. Choose one of: {', '.join(facets['categories'])}.", 422,
+                          "unknown_category", facets["categories"])
+    # Size is essential only where the catalog has sizes (a candle has none).
+    needs_size = req.category is None or req.category in facets["sized_categories"]
+    missing = [f for f in ("category", "size", "max_charge_cents") if getattr(req, f) is None and (f != "size" or needs_size)]
     if missing:
         raise DomainError(f"Please confirm these required fields first: {', '.join(missing)}.", 422, "missing_fields", missing)
     if req.payment_method_id:
@@ -97,7 +104,7 @@ def _evaluate_candidates(store: BaseStore, req: dict, shopper_id: str, pm: str, 
             if not variant:
                 reason += f"; also not offered in {req.get('color') or ''} size {req.get('size')}".replace("  ", " ")
             candidates.append({"product_id": product["product_id"], "name": product["name"], "eligible": False,
-                               "reasons": [reason], "price_cents": product["price_cents"], "best_option": None})
+                               "reasons": [reason], "price_cents": unit_price(product, variant), "best_option": None})
             continue
         if not variant:
             colors = sorted({v["color"] for v in product["variants"] if not req.get("size") or v["size"] == req["size"]})
@@ -116,8 +123,8 @@ def _evaluate_candidates(store: BaseStore, req: dict, shopper_id: str, pm: str, 
             fails = [c for c in res["checks"] if c["status"] == FAIL and c["rule"] != "TOTAL_UNKNOWN"]
             candidates.append({"product_id": product["product_id"], "name": product["name"], "eligible": False,
                                "reasons": [c["explanation"] for c in fails] or
-                                          ["Size, color, stock and item price check out. Shipping and tax are calculated at the store's checkout."],
-                               "price_cents": product["price_cents"], "variant_id": variant["variant_id"], "best_option": None,
+                                          ["Options, stock and item price check out. Shipping and tax are calculated at the store's checkout."],
+                               "price_cents": unit_price(product, variant), "variant_id": variant["variant_id"], "best_option": None,
                                "checkout_url": None if fails else variant.get("checkout_url")})
             continue
         opts = build_options(store, req, product, shopper_id, base, apply_learned_rules)
@@ -126,7 +133,7 @@ def _evaluate_candidates(store: BaseStore, req: dict, shopper_id: str, pm: str, 
         reasons = []
         if not passing:
             if product["inventory_by_variant"].get(variant["variant_id"], 0) < req.get("quantity", 1):
-                reasons.append(f"Out of stock in {variant['color']} size {variant['size']}")
+                reasons.append(f"Out of stock in {variant['color']} {size_label(variant['size'])}".replace("  ", " "))
             elif best:
                 reasons.append(best["failure_summary"] or "No option satisfies your requirements")
         candidates.append({"product_id": product["product_id"], "name": product["name"], "eligible": bool(passing),
@@ -183,7 +190,7 @@ def recommend(store: BaseStore, intent_id: str, apply_learned_rules: bool = True
     explanation = None
     if agent:
         credit = agent["claimed_charge_cents"] - agent["claimed_effective_cost_cents"]
-        explanation = (f"I found the {top['name']} in {req.get('color') or ''} size {req['size']}. "
+        explanation = (f"I found the {top['name']} in {req['color'] + ' ' if req.get('color') else ''}{size_label(req.get('size'))}. "
                        f"With {', '.join(agent['coupon_codes']) or 'no coupon'} the charge is {fmt_cents(agent['claimed_charge_cents'])}"
                        + (f", and your Visa card-linked offer should take off another {fmt_cents(credit)} — "
                           f"an effective cost of {fmt_cents(agent['claimed_effective_cost_cents'])}." if credit else "."))

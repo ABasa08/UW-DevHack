@@ -5,10 +5,8 @@ Pulls products from the Shopify Admin GraphQL API and upserts them into the same
 work unchanged. Shopify stays authoritative: this is a projection, re-run it (or wire it
 to product webhooks) to converge. Products missing from Shopify are archived, not deleted.
 
-Pilot constraints (skipped products are reported, never silently coerced):
-  * all variants of a product share one price (the domain prices per product);
-  * sizes are numeric US-style values (e.g. "10", "10.5");
-  * shipping and tax are unknown until Shopify checkout, so the verifier fails closed.
+Any product type syncs. Prices are per variant; sizes may be numeric or not. Shipping and tax are
+unknown until Shopify checkout, so the verifier fails closed on the total.
 
 Usage:  python -m app.shopify sync [--only-shopify]   (--only-shopify archives the fictional demo catalog)
 Env:    SHOPIFY_SHOP (my-store.myshopify.com) plus either SHOPIFY_CLIENT_ID + SHOPIFY_CLIENT_SECRET
@@ -19,18 +17,31 @@ Env:    SHOPIFY_SHOP (my-store.myshopify.com) plus either SHOPIFY_CLIENT_ID + SH
 from __future__ import annotations
 
 import os
-import re
 from decimal import Decimal
 
 import httpx
 
 from .core import MERCHANT_ID, live_mode, load_env
+from .models import normalize_category, normalize_size
 from .store import BaseStore
 
 API_VERSION = "2026-10"
 PREFIX = "sfy_"
-NUMERIC_SIZE = re.compile(r"^\d{1,2}(\.5)?$")
 DEFAULT_HEX = "#8a8f98"
+# Swatch for a color name: the whole name, else its last known word ("barbell black" -> black); else the neutral default.
+SWATCHES = {"black": "#1f1f1f", "white": "#f5f5f5", "grey": "#9a9a9a", "gray": "#9a9a9a", "charcoal": "#36454f", "navy": "#1f2a44",
+            "blue": "#2f6fd6", "red": "#c62828", "burgundy": "#7b1f2e", "green": "#2e7d32", "pink": "#e75b9b", "purple": "#6a3d9a",
+            "orange": "#ef6c00", "yellow": "#f2c94c", "brown": "#6d4c41", "tan": "#c8a97e", "sand": "#d8c7a0", "mint": "#9fe2bf",
+            "cream": "#f3ead3", "olive": "#6b7a2e", "heather": "#b0b3b8"}
+
+
+def swatch(color: str) -> str:
+    words = color.split()
+    return next((SWATCHES[w] for w in [color, *reversed(words)] if w in SWATCHES), DEFAULT_HEX)
+
+
+# Shopify has no count for untracked or keep-selling variants; a stand-in high enough for any allowed quantity (max 5).
+UNTRACKED_STOCK = 99
 
 QUERY = """
 query Products($after: String) {
@@ -40,7 +51,7 @@ query Products($after: String) {
     nodes {
       id title handle vendor productType status description tags featuredImage { url }
       variants(first: 100) {
-        nodes { id sku price inventoryQuantity selectedOptions { name value } }
+        nodes { id sku price inventoryQuantity inventoryPolicy availableForSale inventoryItem { tracked } selectedOptions { name value } }
       }
     }
   }
@@ -84,34 +95,40 @@ def _numeric_id(gid: str) -> str:
 
 
 def map_product(node: dict, size_option: str = "Size", color_option: str = "Color", shop: str = "") -> tuple[dict | None, str | None]:
-    """Shopify product node -> PerkPilot product doc, or (None, reason) when outside the pilot constraints."""
+    """Shopify product node -> PerkPilot product doc, or (None, reason) when it can't be sold through PerkPilot.
+
+    Any product works: sizes may be numeric or not (S/M/L, 32x30), and products without a size or color
+    option ("Default Title") get empty values. Other options are kept on the variant for display.
+    """
     pid = PREFIX + _numeric_id(node["id"])
-    variants, inventory, prices = [], {}, set()
+    variants, inventory = [], {}
     for v in node["variants"]["nodes"]:
-        opts = {o["name"].lower(): o["value"] for o in v["selectedOptions"]}
-        size = opts.get(size_option.lower(), "").strip()
-        if not NUMERIC_SIZE.match(size):
-            continue
+        opts = {o["name"]: o["value"] for o in v["selectedOptions"] if o["value"] != "Default Title"}
+        lower = {k.lower(): val for k, val in opts.items()}
         vid = f"{pid}-{_numeric_id(v['id'])}"
-        variants.append({"variant_id": vid, "shopify_gid": v["id"], "color": opts.get(color_option.lower(), "").strip().lower(),
-                         "color_hex": DEFAULT_HEX, "size": size, "sku": v.get("sku") or "",
+        # Sellable without a count: inventory not tracked, or "continue selling when out of stock".
+        untracked = v.get("availableForSale", True) and (
+            not (v.get("inventoryItem") or {"tracked": True})["tracked"] or v.get("inventoryPolicy") == "CONTINUE")
+        # ponytail: variants are matched on size + color only; a third option (e.g. Material) picks the first match.
+        variants.append({"variant_id": vid, "shopify_gid": v["id"], "color": lower.get(color_option.lower(), "").strip().lower(),
+                         "color_hex": swatch(lower.get(color_option.lower(), "").strip().lower()), "size": normalize_size(lower.get(size_option.lower())) or "",
+                         "options": opts, "sku": v.get("sku") or "", "stock_untracked": bool(untracked),
+                         "price_cents": int(Decimal(v["price"]) * 100),  # Money is a decimal string; USD minor units are exact cents
                          # Shopify cart permalink: adds this variant and opens the store's own checkout.
                          "checkout_url": f"https://{shop}/cart/{_numeric_id(v['id'])}:1" if shop else None})
-        inventory[vid] = max(v.get("inventoryQuantity") or 0, 0)
-        prices.add(int(Decimal(v["price"]) * 100))  # Money is a decimal string; USD minor units are exact cents
+        inventory[vid] = UNTRACKED_STOCK if untracked else max(v.get("inventoryQuantity") or 0, 0)
     if not variants:
-        return None, f"no variants with a numeric '{size_option}' option"
-    if len(prices) > 1:
-        return None, "variants have different prices"
+        return None, "no variants"
     return {
         "_id": pid, "product_id": pid, "shopify_gid": node["id"], "source": "shopify",
         # ponytail: single merchant; add a shop/tenant id on every record before serving a second store.
         "merchant_id": MERCHANT_ID,
         "name": node["title"], "brand": node.get("vendor") or "",
-        "category": (node.get("productType") or "uncategorized").strip().lower().replace(" ", "_"),
+        "category": normalize_category(node.get("productType")) or "other",
         "description": node.get("description") or "",
         "variants": variants, "available_variants": [v["variant_id"] for v in variants], "inventory_by_variant": inventory,
-        "price_cents": prices.pop(), "demo_tax_cents": 0, "currency": "USD", "delivery_options": [],
+        "price_cents": min(v["price_cents"] for v in variants),  # "from" price; variants carry their own
+        "demo_tax_cents": 0, "currency": "USD", "delivery_options": [],
         "size_information": {"system": "as listed", "fit_note": "", "chart": []},
         "status": "active" if node.get("status") == "ACTIVE" else "archived",
         "image": {"accent_hex": DEFAULT_HEX, "url": (node.get("featuredImage") or {}).get("url")},

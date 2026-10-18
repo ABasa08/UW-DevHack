@@ -6,6 +6,7 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
+# The demo store's categories. Real catalogs (e.g. Shopify) bring their own; see pricing.catalog_facets.
 CATEGORIES = [
     "running_shoes",
     "trail_running",
@@ -30,15 +31,21 @@ PROBLEM_TYPES = [
 
 
 def normalize_size(value: Optional[str | float | int]) -> Optional[str]:
-    if value is None or value == "":
+    """Numeric sizes canonicalised ('10.0' -> '10'); anything else (S, XL, 32x30, One Size) upper-cased."""
+    s = "" if value is None else str(value).strip()
+    if not s:
         return None
     try:
-        f = float(str(value).strip())
+        f = float(s)
     except ValueError:
-        return None
-    if f <= 0 or f > 20 or (f * 2) != int(f * 2):
+        return s.upper()[:24]
+    if f <= 0:
         return None
     return str(int(f)) if f == int(f) else str(f)
+
+
+def normalize_category(value: Optional[str]) -> Optional[str]:
+    return value.strip().lower().replace(" ", "_") if value and value.strip() else None
 
 
 class Requirements(BaseModel):
@@ -60,11 +67,7 @@ class Requirements(BaseModel):
     @field_validator("category")
     @classmethod
     def _cat(cls, v):
-        if v is None:
-            return v
-        if v not in CATEGORIES:
-            raise ValueError(f"unknown category '{v}'")
-        return v
+        return normalize_category(v)  # membership in the live catalog is checked at confirmation
 
     @field_validator("size", mode="before")
     @classmethod

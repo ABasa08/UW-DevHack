@@ -1,10 +1,13 @@
 "use client";
 
-import { CATEGORY_LABELS, dayLabel } from "@/lib/format";
+import { api } from "@/lib/api";
+import { categoryLabel, dayLabel } from "@/lib/format";
+import { useLoad } from "@/lib/hooks";
 import { cx } from "./ui";
 
-const COLORS = ["black", "white", "grey", "navy", "blue", "red", "green", "sand", "orange"];
-const SIZES = ["8", "8.5", "9", "9.5", "10", "10.5", "11", "11.5", "12"];
+// What the store actually sells, from /api/catalog/facets.
+type Facets = { categories: string[]; sized_categories: string[]; colors: string[]; sizes: string[] };
+const withValue = (list: string[], v: string | null) => (v && !list.includes(v) ? [...list, v] : list);
 
 export type Req = {
   category: string | null;
@@ -52,25 +55,27 @@ export default function RequirementsForm({
   minDate: string;
 }) {
   const set = (patch: Partial<Req>) => onChange({ ...value, ...patch });
+  const f = (useLoad<Facets>(() => api.get("/api/catalog/facets"), []).data ?? { categories: [], sized_categories: [], colors: [], sizes: [] });
+  const needsSize = !value.category || f.sized_categories.includes(value.category);
   const had = (k: keyof Req) => parsed[k] !== null && parsed[k] !== undefined;
   return (
     <div className="grid gap-4 sm:grid-cols-2">
       <Field label="Product type" flag={flags.category} inferred={had("category")}>
         <select className={cx(input, !value.category && "border-warn")} value={value.category ?? ""} onChange={(e) => set({ category: e.target.value || null })}>
           <option value="">Choose…</option>
-          {Object.entries(CATEGORY_LABELS).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+          {withValue(f.categories, value.category).map((k) => <option key={k} value={k}>{categoryLabel(k)}</option>)}
         </select>
       </Field>
       <Field label="Color" inferred={had("color")}>
         <select className={input} value={value.color ?? ""} onChange={(e) => set({ color: e.target.value || null })}>
           <option value="">Any color</option>
-          {COLORS.map((c) => <option key={c} value={c} className="capitalize">{c}</option>)}
+          {withValue(f.colors, value.color).map((c) => <option key={c} value={c} className="capitalize">{c}</option>)}
         </select>
       </Field>
-      <Field label="Size (US)" flag={flags.size} inferred={had("size")}>
-        <select className={cx(input, !value.size && "border-warn")} value={value.size ?? ""} onChange={(e) => set({ size: e.target.value || null })}>
-          <option value="">Choose…</option>
-          {SIZES.map((s) => <option key={s} value={s}>{s}</option>)}
+      <Field label="Size" flag={needsSize ? flags.size : undefined} inferred={had("size")}>
+        <select className={cx(input, needsSize && !value.size && "border-warn")} value={value.size ?? ""} onChange={(e) => set({ size: e.target.value || null })}>
+          <option value="">{needsSize ? "Choose…" : "Any / one size"}</option>
+          {withValue(f.sizes, value.size).map((s) => <option key={s} value={s}>{s}</option>)}
         </select>
       </Field>
       <div>

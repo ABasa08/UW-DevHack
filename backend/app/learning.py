@@ -12,6 +12,7 @@ from collections import Counter
 
 from .ai import draft_rule_text
 from .core import DomainError, MERCHANT_ID, append_event, next_id, now
+from .pricing import sizes_in_order
 from .store import BaseStore
 
 
@@ -156,7 +157,7 @@ def rules_overview(store: BaseStore) -> dict:
                                       "complaint": c["complaint_text"], "outcome": c["validated_outcome"]})
     watch = []
     for p in store.find("products", {"status": "active"}):
-        for size in sorted({v["size"] for v in p["variants"]}, key=float):
+        for size in sizes_in_order(p):
             s = group_stats(store, p["product_id"], size)
             if s["validated_outcome_count"] or s["unvalidated_report_ids"]:
                 watch.append({**s, "product_name": p["name"]})

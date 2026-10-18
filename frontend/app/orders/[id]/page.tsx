@@ -9,7 +9,7 @@ import { ProductImage } from "@/components/ProductCard";
 import { EventLog, ShipmentTimeline } from "@/components/Timeline";
 import { Badge, Button, Card, ErrorBox, Eyebrow, KV, Loading, SimLabel } from "@/components/ui";
 import { api } from "@/lib/api";
-import { CATEGORY_LABELS, CLASSIFICATION_LABELS, STATUS_LABELS, dateTime, dayLabel, money } from "@/lib/format";
+import { categoryLabel, CLASSIFICATION_LABELS, dateTime, dayLabel, money, sizeLabel, STATUS_LABELS } from "@/lib/format";
 import { useLoad } from "@/lib/hooks";
 
 function OrderInner() {
@@ -57,7 +57,7 @@ function OrderInner() {
         <div>
           <Eyebrow>{p.kind === "exchange" ? "Exchange order" : "Verified purchase record"} · {p.purchase_id}</Eyebrow>
           <h1 className="mt-1 font-display text-3xl font-semibold">{p.product_name}</h1>
-          <p className="capitalize text-ink-mute">{p.color} · US {p.size} · qty {p.quantity}</p>
+          <p className="capitalize text-ink-mute">{p.color} · {sizeLabel(p.size)} · qty {p.quantity}</p>
         </div>
         <div className="flex items-center gap-2">
           <Badge tone={delivered ? "pass" : "neutral"}>{STATUS_LABELS[p.status] ?? p.status}</Badge>
@@ -120,7 +120,7 @@ function OrderInner() {
               <p className="text-sm font-semibold">Exchange orders</p>
               {exchange_orders.map((x: any) => (
                 <Link key={x.purchase_id} href={`/orders/${x.purchase_id}`} className="mt-2 flex items-center justify-between rounded-lg bg-paper-sunk px-3 py-2 text-sm hover:bg-paper-line">
-                  <span className="capitalize">{x.color} · US {x.size} · {x.purchase_id}</span>
+                  <span className="capitalize">{x.color} · {sizeLabel(x.size)} · {x.purchase_id}</span>
                   <span className="text-ink-mute">{x.shipment?.delivered_at ? "Delivered" : `Arrives ${dayLabel(x.approved_delivery_date)}`}</span>
                 </Link>
               ))}
@@ -141,7 +141,7 @@ function OrderInner() {
               <div className="mt-2 rounded-lg bg-paper-sunk px-3 py-2 text-sm">
                 <p className="text-xs text-ink-mute">Confirmed requirements v{p.confirmation_version} · {dateTime(p.confirmation_time)}</p>
                 <p className="mt-0.5">
-                  {CATEGORY_LABELS[req.category]} · <span className="capitalize">{req.color ?? "any color"}</span> · US {req.size} · ≤{" "}
+                  {categoryLabel(req.category)} · <span className="capitalize">{req.color ?? "any color"}</span> · {sizeLabel(req.size)} · ≤{" "}
                   {money(req.max_charge_cents)} total{req.deadline_date && <> · by {dayLabel(req.deadline_date)}</>}
                 </p>
                 {intent?.original_request && <p className="mt-1 text-xs italic text-ink-mute">“{intent.original_request}”</p>}

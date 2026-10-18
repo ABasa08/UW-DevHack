@@ -8,7 +8,7 @@ import { useDemo } from "@/components/DemoProvider";
 import { ShipmentTimeline } from "@/components/Timeline";
 import { Badge, Button, Card, ErrorBox, Eyebrow, Loading, SimLabel, cx, type Tone } from "@/components/ui";
 import { api } from "@/lib/api";
-import { CLASSIFICATION_LABELS, dateTime, money } from "@/lib/format";
+import { CLASSIFICATION_LABELS, dateTime, money, sizeLabel } from "@/lib/format";
 import { useLoad } from "@/lib/hooks";
 
 const CLASS_TONE: Record<string, Tone> = {
@@ -91,7 +91,7 @@ export default function ClaimPage() {
           <Eyebrow>Resolution center · {claim.claim_id}</Eyebrow>
           <h1 className="mt-1 font-display text-3xl font-semibold">{purchase.product_name}</h1>
           <Link href={`/orders/${purchase.purchase_id}`} className="text-sm capitalize text-ink-mute underline-offset-2 hover:underline">
-            {purchase.color} · US {purchase.size} · order {purchase.purchase_id}
+            {purchase.color} · {sizeLabel(purchase.size)} · order {purchase.purchase_id}
           </Link>
         </div>
         <div className="flex flex-wrap items-center gap-2">

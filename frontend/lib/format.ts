@@ -25,7 +25,7 @@ export function dayLabel(isoDate: string | null | undefined): string {
 
 export function titleCase(s: string | null | undefined): string {
   if (!s) return "";
-  return s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  return s.replace(/_/g, " ").replace(/(^|\s)\w/g, (c) => c.toUpperCase());
 }
 
 export const CATEGORY_LABELS: Record<string, string> = {
@@ -36,6 +36,12 @@ export const CATEGORY_LABELS: Record<string, string> = {
   casual_sneakers: "Casual sneakers",
   recovery_slides: "Recovery slides",
 };
+
+// Catalog categories beyond the demo's (e.g. a synced Shopify "hoodie") fall back to title case.
+export const categoryLabel = (k: string | null | undefined): string => (k ? CATEGORY_LABELS[k] ?? titleCase(k) : "");
+
+// Numeric sizes are the demo's US shoe sizes; anything else (S, XL, 32x30) shows as listed.
+export const sizeLabel = (s: string | null | undefined): string => (!s ? "One size" : /^\d+(\.\d+)?$/.test(s) ? `US ${s}` : s);
 
 export const CLASSIFICATION_LABELS: Record<string, string> = {
   ORDER_MISMATCH: "Order mismatch",

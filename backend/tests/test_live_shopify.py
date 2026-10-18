@@ -5,6 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import create_app
+from app.pricing import sizes_in_order
 from app.shopify import fetch_products, get_token, sync_catalog
 from app.store import MemoryStore, create_store
 
@@ -26,6 +27,15 @@ CATALOG = [
     node(1, [variant(11, "10"), variant(12, "10.5", qty=None)]),
     node(2, [variant(21, "M")], title="Socks"),                                         # non-numeric size
     node(3, [variant(31, "10", price="90.00"), variant(32, "11", price="95.00")]),      # mixed prices
+]
+
+# A store that sells no shoes at all: letter sizes, per-variant prices, and a product with no options.
+APPAREL = [
+    node(5, [variant(51, "S", "Grey", "40.00"), variant(52, "M", "Grey", "40.00"), variant(53, "XL", "Grey", "45.00")],
+         title="Heavyweight Hoodie", ptype="Hoodie"),
+    node(6, [{"id": "gid://shopify/ProductVariant/61", "sku": "", "price": "15.00", "inventoryQuantity": 3,
+              "selectedOptions": [{"name": "Title", "value": "Default Title"}]}], title="Tote Bag", ptype="Bag"),
+    node(7, [], title="Empty"),
 ]
 
 
@@ -83,15 +93,28 @@ def test_fetch_paginates_and_rejects_non_usd():
 
 def test_sync_maps_skips_and_archives():
     store = MemoryStore()
-    res = sync_catalog(store, CATALOG)
-    assert res["synced"] == ["sfy_1"] and {s["reason"] for s in res["skipped"]} == {
-        "no variants with a numeric 'Size' option", "variants have different prices"}
+    res = sync_catalog(store, CATALOG + APPAREL)
+    assert res["synced"] == ["sfy_1", "sfy_2", "sfy_3", "sfy_5", "sfy_6"]
+    assert [(s["title"], s["reason"]) for s in res["skipped"]] == [("Empty", "no variants")]
+    assert store.get("products", "sfy_2")["variants"][0]["size"] == "M"
+    mixed = store.get("products", "sfy_3")
+    assert mixed["price_cents"] == 9000 and [v["price_cents"] for v in mixed["variants"]] == [9000, 9500]
+    hoodie, tote = store.get("products", "sfy_5"), store.get("products", "sfy_6")
+    assert hoodie["category"] == "hoodie" and sizes_in_order(hoodie) == ["S", "M", "XL"]
+    assert tote["variants"][0]["size"] == "" and tote["variants"][0]["color"] == "" and tote["variants"][0]["options"] == {}
+    assert tote["inventory_by_variant"] == {"sfy_6-61": 3} and not tote["variants"][0]["stock_untracked"]
+    # Untracked inventory (Shopify reports -1) or "continue selling" is available, not out of stock.
+    untracked = node(8, [{**variant(81, "M", qty=-1), "availableForSale": True, "inventoryItem": {"tracked": False}},
+                         {**variant(82, "L", qty=0), "availableForSale": True, "inventoryPolicy": "CONTINUE"},
+                         {**variant(83, "XL", qty=0), "availableForSale": False, "inventoryPolicy": "DENY"}])
+    sync_catalog(other := MemoryStore(), [untracked])
+    assert other.get("products", "sfy_8")["inventory_by_variant"] == {"sfy_8-81": 99, "sfy_8-82": 99, "sfy_8-83": 0}
     p = store.get("products", "sfy_1")
     assert p["price_cents"] == 11000 and p["category"] == "running_shoes" and p["brand"] == "Acme"
     assert p["inventory_by_variant"] == {"sfy_1-11": 5, "sfy_1-12": 0}  # unknown inventory -> 0, never assumed
     assert [v["color"] for v in p["variants"]] == ["black", "black"]
     # removed from Shopify -> archived on next sync
-    assert sync_catalog(store, [])["archived"] == ["sfy_1"] and store.get("products", "sfy_1")["status"] == "archived"
+    assert "sfy_1" in sync_catalog(store, [])["archived"] and store.get("products", "sfy_1")["status"] == "archived"
 
 
 def verify_sfy(client, iid, vid="sfy_1-11"):
@@ -116,7 +139,7 @@ def test_synced_product_verification_fails_closed(client, confirmed_intent):
 
 def test_recommendations_hand_off_to_shopify_checkout(client, confirmed_intent):
     store = client.app.state.store
-    sync_catalog(store, CATALOG, shop="x.myshopify.com", only_shopify=True)
+    sync_catalog(store, CATALOG[:1], shop="x.myshopify.com", only_shopify=True)
     assert [p["_id"] for p in store.find("products", {"status": "active"})] == ["sfy_1"]  # demo catalog archived
     recs = ok(client.post("/api/recommendations", json={"intent_id": confirmed_intent()["intent_id"]}))
     [c] = recs["candidates"]
@@ -143,3 +166,29 @@ def test_get_token_prefers_static_then_client_credentials(monkeypatch):
     assert get_token(httpx.Client(transport=httpx.MockTransport(handler)), "x.myshopify.com") == "tok24h"
     assert str(seen[0].url) == "https://x.myshopify.com/admin/oauth/access_token"
     assert b"grant_type=client_credentials" in seen[0].content and b"client_secret=sec" in seen[0].content
+
+
+def test_any_catalog_parses_confirms_and_matches(client):
+    """A hoodie/bag store: categories and sizes come from the catalog, sizes aren't required where none exist."""
+    store = client.app.state.store
+    sync_catalog(store, APPAREL, shop="x.myshopify.com", only_shopify=True)
+    assert ok(client.get("/api/catalog/facets")) == {"categories": ["bag", "hoodie"], "sized_categories": ["hoodie"],
+                                                     "colors": ["grey"], "sizes": ["S", "M", "XL"]}
+    it = ok(client.post("/api/intent/parse", json={"shopper_id": "shp_jordan", "text": "a grey hoodie in medium under $50"}))
+    req = it["parsed_requirements"]
+    assert (req["category"], req["color"], req["size"], req["max_charge_cents"]) == ("hoodie", "grey", "M", 5000)
+    ok(client.post("/api/intent/confirm", json={"intent_id": it["intent_id"], "confirmed_requirements": req}))
+    [c] = ok(client.post("/api/recommendations", json={"intent_id": it["intent_id"]}))["candidates"]
+    assert c["variant_id"] == "sfy_5-52" and c["checkout_url"] == "https://x.myshopify.com/cart/52:1"
+    # Per-variant price: the $45 XL is over a $42 limit even though the hoodie's "from" price is $40.
+    xl = {**req, "size": "XL", "max_charge_cents": 4200}
+    ok(client.post("/api/intent/confirm", json={"intent_id": it["intent_id"], "confirmed_requirements": xl}))
+    [c] = ok(client.post("/api/recommendations", json={"intent_id": it["intent_id"]}))["candidates"]
+    assert c["checkout_url"] is None and "exceeds" in c["reasons"][0]
+    # A bag has no sizes, so none is required; an unknown category is refused.
+    bag = ok(client.post("/api/intent/parse", json={"shopper_id": "shp_jordan", "text": "a bag under $20"}))
+    assert bag["parsed_requirements"]["category"] == "bag" and "size" not in bag["missing_essential"]
+    ok(client.post("/api/intent/confirm", json={"intent_id": bag["intent_id"], "confirmed_requirements": bag["parsed_requirements"]}))
+    r = client.post("/api/intent/confirm", json={"intent_id": bag["intent_id"],
+                                                 "confirmed_requirements": {**bag["parsed_requirements"], "category": "running_shoes"}})
+    assert r.status_code == 422 and r.json()["error"]["code"] == "unknown_category"

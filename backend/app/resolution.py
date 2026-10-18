@@ -7,7 +7,7 @@ from datetime import date, datetime, timedelta
 from .ai import parse_complaint
 from .core import DomainError, MERCHANT_ID, append_event, fmt_cents, next_id, now
 from .learning import evaluate_group, group_stats
-from .pricing import estimate_delivery, find_variant
+from .pricing import estimate_delivery, find_variant, sizes_in_order
 from .records import make_purchase_record, make_shipment, process_shipments, shipment_for
 from .store import BaseStore
 from .verifier import FAIL, INFO, PASS, _check
@@ -281,12 +281,14 @@ def generate_remedies(store: BaseStore, claim_id: str) -> list[dict]:
     if not in_window:
         add("manual_review", "Ask the merchant to review", "This order is outside the 30-day return window. A person will review your request.", cost=5_00)
     elif cls == "SUSPECTED_PRODUCT_FIT":
-        sizes = sorted({v["size"] for v in product["variants"]}, key=float)
-        cur = float(purchase["size"])
-        if issue["problem_type"] == "fit_tight":
-            order = [s for s in sizes if float(s) > cur]
+        sizes = sizes_in_order(product)
+        cur = sizes.index(purchase["size"]) if purchase["size"] in sizes else None
+        if cur is None:
+            order = []
+        elif issue["problem_type"] == "fit_tight":
+            order = sizes[cur + 1:]
         else:
-            order = [s for s in sorted(sizes, key=float, reverse=True) if float(s) < cur]
+            order = sizes[:cur][::-1]
         if issue.get("mentioned_size") in order:
             order.remove(issue["mentioned_size"])
             order.insert(0, issue["mentioned_size"])

@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { CATEGORY_LABELS, money } from "@/lib/format";
+import { categoryLabel, money } from "@/lib/format";
 import ShoeArt from "./ShoeArt";
 
 export function colorsOf(product: any): { color: string; hex: string }[] {
@@ -27,22 +27,23 @@ export function ProductImage({ product, color, className = "" }: { product: any;
 
 export default function ProductCard({ product }: { product: any }) {
   const colors = colorsOf(product);
+  const untracked = product.variants.some((v: any) => v.stock_untracked); // Shopify item sold without a stock count
   const stock = Object.values(product.inventory_by_variant as Record<string, number>).reduce((a, b) => a + b, 0);
   return (
     <Link href={`/products/${product.product_id}`} className="group block">
       <ProductImage product={product} className="aspect-[4/3] transition group-hover:shadow-lift" />
       <div className="mt-3 flex items-start justify-between gap-3">
         <div>
-          <p className="text-xs text-ink-mute">{CATEGORY_LABELS[product.category]}</p>
+          <p className="text-xs text-ink-mute">{categoryLabel(product.category)}</p>
           <p className="font-medium leading-snug group-hover:underline">{product.name}</p>
         </div>
         <p className="font-medium tabular-nums">{money(product.price_cents)}</p>
       </div>
       <div className="mt-2 flex items-center gap-1.5">
-        {colors.map((c) => (
+        {colors.filter((c) => c.color).map((c) => (
           <span key={c.color} title={c.color} className="h-3.5 w-3.5 rounded-full border border-black/10" style={{ background: c.hex }} />
         ))}
-        <span className="ml-auto text-xs text-ink-mute">{product.rating != null && <>★ {product.rating} · </>}{stock} in stock</span>
+        <span className="ml-auto text-xs text-ink-mute">{product.rating != null && <>★ {product.rating} · </>}{untracked ? "In stock" : stock === 0 ? "Sold out" : `${stock} in stock`}</span>
       </div>
     </Link>
   );

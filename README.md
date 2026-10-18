@@ -126,7 +126,7 @@ The backend has 34 tests. They include all 16 required acceptance tests from the
 
 PerkPilot reads your Shopify catalog, and a floating assistant on your storefront helps shoppers pick the right product. Shopify still owns the cart, checkout, payments and orders. When PerkPilot finds a match, the shopper continues to **your normal Shopify checkout**. PerkPilot verifies everything it can know (product type, brand, color, size, stock, and item price against the shopper's budget). It never claims to verify shipping or tax, because only Shopify's checkout calculates them. For those products it shows "Continue to store checkout" in place of its own simulated checkout.
 
-You need a Shopify store with an Online Store theme, USD pricing, and footwear-style variants: a numeric **Size** option (e.g. `10`, `10.5`) and, optionally, a **Color** option. Products that don't fit are skipped and listed in the sync output, never guessed.
+You need a Shopify store with an Online Store theme and USD pricing. Any product type works. Categories come from each product's **Product type** (blank becomes `other`), and the assistant only offers categories, colors and sizes your catalog actually has. A **Size** option can be numeric (`10.5`) or not (`S`, `XL`, `32x30`), and a **Color** option is optional. Products without either (e.g. a tote bag) sync as one size. Prices are per variant. Only products with no variants are skipped, and they're listed in the sync output.
 
 ### 1. Create a Shopify app with read access
 
@@ -152,8 +152,7 @@ Then, from `backend/` with the venv active:
 
 ```bash
 python -m app.shopify sync --only-shopify
-# synced 12, skipped 1, archived 6
-#   skipped 'Gift Card': no variants with a numeric 'Size' option
+# synced 12, skipped 0, archived 6
 ```
 
 `--only-shopify` archives the fictional StrideLab demo catalog so shoppers see only your products. Drop the flag to keep both. The sync is a one-way, repeatable projection: re-run it whenever your catalog changes (a cron job works). Products removed from Shopify are archived, never deleted. The demo **Reset** button re-seeds the demo data, so re-run the sync after using it.
@@ -181,7 +180,8 @@ The button opens `https://<your-frontend>/embed`, which is the assistant without
 - Shoppers in the embed use the demo shopper identity; Shopify customer accounts aren't linked yet.
 - The merchant console's returns and learning features run on PerkPilot's own claims. Shopify orders and returns aren't imported yet.
 - Inventory and prices are only as fresh as the last sync; there are no webhooks yet.
-- Single store, USD only, one price per product.
+- Single store, USD only.
+- Variants are matched on Size and Color; a third option (e.g. Material) isn't matched, and the first variant wins.
 
 [SHOPIFY_INTEGRATION_REPORT.md](SHOPIFY_INTEGRATION_REPORT.md) covers the full production roadmap: theme app extension, checkout enforcement, order and return webhooks, and authenticated merchant sessions.
 

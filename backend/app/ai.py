@@ -24,6 +24,7 @@ import httpx
 from pydantic import ValidationError
 
 from .models import CATEGORIES, PROBLEM_TYPES, Requirements, StructuredComplaint, normalize_size
+from .pricing import size_label
 
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
@@ -175,38 +176,48 @@ def resolve_deadline(expression: str | None, today: date) -> str | None:
 
 # ---------------------------------------------------------------- shopping requests
 
-REQ_SCHEMA = {
-    "type": "OBJECT",
-    "properties": {
-        "category": {"type": "STRING", "enum": CATEGORIES, "nullable": True},
-        "color": {"type": "STRING", "nullable": True},
-        "size": {"type": "STRING", "nullable": True},
-        "max_charge_dollars": {"type": "NUMBER", "nullable": True},
-        "budget_includes_shipping_and_tax": {"type": "BOOLEAN", "nullable": True},
-        "deadline_expression": {"type": "STRING", "nullable": True},
-        "brand": {"type": "STRING", "nullable": True},
-        "payment_preference": {"type": "STRING", "enum": ["credit", "debit"], "nullable": True},
-        "quantity": {"type": "INTEGER", "nullable": True},
-        "ambiguities": {"type": "ARRAY", "items": {"type": "OBJECT", "properties": {
-            "field": {"type": "STRING"}, "question": {"type": "STRING"}}, "required": ["field", "question"]}},
-        "assistant_message": {"type": "STRING"},
-    },
-    "required": ["ambiguities", "assistant_message"],
-}
-
-REQ_SYSTEM = (
-    "You extract structured shoe-shopping requirements for the fictional store StrideLab Running. "
-    "Only record what the shopper actually said. Never invent preferences: leave a field null when it was not stated. "
-    f"category must be one of {CATEGORIES} ('running shoes'->running_shoes). Sizes are US sizes as strings like '10' or '10.5'. "
-    "max_charge_dollars is the maximum amount the shopper is willing to be charged. Set budget_includes_shipping_and_tax true only when "
-    "the shopper says the budget includes shipping/tax/everything/total, false if they say it excludes them, null if unstated. "
-    "deadline_expression is the shopper's words for the delivery deadline (e.g. 'Friday'); do not convert it to a date. "
-    "Add an ambiguity (field + short question) for anything essential that is missing or unclear: category, size, max budget. "
-    "assistant_message: one or two friendly sentences restating what you understood, with no prices or promises."
-)
+def _req_schema(categories: list[str]) -> dict:
+    return {
+        "type": "OBJECT",
+        "properties": {
+            "category": {"type": "STRING", "enum": categories, "nullable": True},
+            "color": {"type": "STRING", "nullable": True},
+            "size": {"type": "STRING", "nullable": True},
+            "max_charge_dollars": {"type": "NUMBER", "nullable": True},
+            "budget_includes_shipping_and_tax": {"type": "BOOLEAN", "nullable": True},
+            "deadline_expression": {"type": "STRING", "nullable": True},
+            "brand": {"type": "STRING", "nullable": True},
+            "payment_preference": {"type": "STRING", "enum": ["credit", "debit"], "nullable": True},
+            "quantity": {"type": "INTEGER", "nullable": True},
+            "ambiguities": {"type": "ARRAY", "items": {"type": "OBJECT", "properties": {
+                "field": {"type": "STRING"}, "question": {"type": "STRING"}}, "required": ["field", "question"]}},
+            "assistant_message": {"type": "STRING"},
+        },
+        "required": ["ambiguities", "assistant_message"],
+    }
 
 
-def _fallback_requirements(text: str) -> dict:
+def _req_system(c: dict) -> str:
+    sizes = f"Sizes offered: {c['sizes'][:40]}; map the shopper's words to one of these ('medium'->'M')." if c["sizes"] else ""
+    return (
+        "You extract structured shopping requirements for an online store. "
+        "Only record what the shopper actually said. Never invent preferences: leave a field null when it was not stated. "
+        f"category must be one of {c['categories']}; pick the closest match for what the shopper describes. "
+        f"Products and their categories: {dict(list(c.get('titles', {}).items())[:60])}. {sizes} "
+        "max_charge_dollars is the maximum amount the shopper is willing to be charged. Set budget_includes_shipping_and_tax true only when "
+        "the shopper says the budget includes shipping/tax/everything/total, false if they say it excludes them, null if unstated. "
+        "deadline_expression is the shopper's words for the delivery deadline (e.g. 'Friday'); do not convert it to a date. "
+        "Add an ambiguity (field + short question) for anything essential that is missing or unclear: category, max budget, "
+        f"and size when the category is one of {c['sized_categories']}. "
+        "assistant_message: one or two friendly sentences restating what you understood, with no prices or promises."
+    )
+
+
+DEMO_FACETS = {"categories": CATEGORIES, "sized_categories": CATEGORIES, "colors": [], "sizes": []}
+SIZE_WORDS = {"extra small": "XS", "x-small": "XS", "small": "S", "medium": "M", "large": "L", "extra large": "XL", "x-large": "XL"}
+
+
+def _fallback_requirements(text: str, catalog: dict = DEMO_FACETS) -> dict:
     t = text.lower()
     out: dict[str, Any] = {"ambiguities": []}
     if "trail" in t:
@@ -221,13 +232,33 @@ def _fallback_requirements(text: str) -> dict:
         out["category"] = "recovery_slides"
     elif re.search(r"sneaker|casual|court", t):
         out["category"] = "casual_sneakers"
-    for c in COLORS:
-        if re.search(rf"\b{c}\b", t):
+    if out.get("category") not in catalog["categories"]:
+        # Any other catalog: the whole category name ("tank top"), else a word that pins down exactly one category,
+        # from its name ("sweater" -> men's_sweater) or a product title ("hoodie" -> fleece). Plurals match too.
+        out.pop("category", None)
+        by_word: dict[str, set] = {}
+        for text_, c in [(c.replace("_", " "), c) for c in catalog["categories"]] + list(catalog.get("titles", {}).items()):
+            for w in re.findall(r"[a-z]{4,}", text_.lower()):
+                by_word.setdefault(w.rstrip("s"), set()).add(c)
+        names = [(c.replace("_", " "), c) for c in catalog["categories"]] + [(w, next(iter(cs))) for w, cs in by_word.items() if len(cs) == 1]
+        out["category"] = next((c for w, c in names if re.search(rf"\b{re.escape(w.rstrip('s'))}s?\b", t)), None)
+    for c in [*catalog["colors"], *COLORS]:
+        if re.search(rf"\b{re.escape(c)}\b", t):
             out["color"] = "grey" if c == "gray" else c
             break
     m = re.search(r"size\s*(?:us\s*)?(\d{1,2}(?:\.5)?)|(\d{1,2}(?:\.5)?)\s*(?:us\b|men'?s|women'?s)", t)
     if m:
         out["size"] = m.group(1) or m.group(2)
+    else:
+        m = re.search(r"\bsize\s+([a-z0-9][\w./-]*)", t)
+        # Size words ("large"), or a multi-letter catalog size said bare ("xs", "2xl"); single letters are too ambiguous.
+        bare = [(s.lower(), s) for s in catalog["sizes"] if len(s) > 1 and not s.replace(".", "").isdigit()]
+        word = next((code for w, code in sorted([*SIZE_WORDS.items(), *bare], key=lambda kv: -len(kv[0]))
+                     if re.search(rf"\b{re.escape(w)}\b", t)), None)
+        for cand in (normalize_size(SIZE_WORDS.get(m.group(1), m.group(1))) if m else None, word):
+            if cand and cand in catalog["sizes"]:
+                out["size"] = cand
+                break
     m = re.search(r"\$\s?(\d{1,4}(?:\.\d{1,2})?)|(\d{2,4})\s*(?:dollars|usd|bucks)", t)
     if m:
         out["max_charge_dollars"] = float(m.group(1) or m.group(2))
@@ -256,9 +287,9 @@ def _fallback_requirements(text: str) -> dict:
     parts = []
     if out.get("color"):
         parts.append(out["color"])
-    parts.append((out.get("category") or "shoes").replace("_", " "))
+    parts.append((out.get("category") or "item").replace("_", " "))
     if out.get("size"):
-        parts.append(f"in US size {out['size']}")
+        parts.append(f"in {size_label(out['size'])}")
     out["assistant_message"] = f"Here's what I understood: {' '.join(parts)}. Please check the details below before I search."
     return out
 
@@ -292,7 +323,8 @@ def _validated_requirements(raw: dict, today: date) -> tuple[Requirements, list[
     return req, amb, notes, str(raw.get("assistant_message") or "")
 
 
-def parse_shopping_request(text: str, today: date) -> dict:
+def parse_shopping_request(text: str, today: date, catalog: dict | None = None) -> dict:
+    catalog = catalog or DEMO_FACETS
     holder: dict = {}
 
     def validate(raw):
@@ -300,14 +332,16 @@ def parse_shopping_request(text: str, today: date) -> dict:
         return holder["parsed"]
 
     def fallback():
-        return _validated_requirements(_fallback_requirements(text), today)
+        return _validated_requirements(_fallback_requirements(text, catalog), today)
 
     user = f"Today's date in the store timezone is {today.isoformat()} ({WEEKDAYS[today.weekday()].title()}).\nShopper request: {text}"
-    (req, amb, notes, message), meta = _interpret(REQ_SYSTEM, user, REQ_SCHEMA, fallback, validate)
+    (req, amb, notes, message), meta = _interpret(_req_system(catalog), user, _req_schema(catalog["categories"] or ["other"]), fallback, validate)
 
     # Deterministic completeness check on top of whatever the interpreter said.
-    essentials = {"category": "What type of shoe are you shopping for?", "size": "What US size do you need?",
+    essentials = {"category": "What type of product are you shopping for?", "size": "What size do you need?",
                   "max_charge_cents": "What's the most you want to be charged, including shipping and tax?"}
+    if req.category and req.category not in catalog["sized_categories"]:
+        essentials.pop("size")
     have = {a["field"] for a in amb}
     for field, q in essentials.items():
         if getattr(req, field) is None and field not in have and not (field == "max_charge_cents" and "max_charge_dollars" in have):

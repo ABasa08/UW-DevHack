@@ -18,6 +18,7 @@ from .fixtures import seed
 from .models import (AdvanceRequest, CheckoutConfirmRequest, ClaimRequest, ClarifyRequest, ConfirmIntentRequest, OutcomeRequest,
                      ParseRequest, RecommendRequest, RemedyAcceptRequest, RuleDecisionRequest, RuleToggleRequest, VerifyRequest)
 from .records import integrity, shipment_for
+from .pricing import catalog_facets, sizes_in_order
 from .store import BaseStore, create_store
 from .verifier import active_rules_for
 
@@ -78,12 +79,16 @@ def create_app(store: BaseStore | None = None) -> FastAPI:
             items = [p for p in items if p["category"] == category]
         return {"products": sorted(items, key=lambda p: (p["category"] != "running_shoes", p["name"]))}
 
+    @app.get("/api/catalog/facets")
+    def facets():
+        return catalog_facets(S())
+
     @app.get("/api/products/{product_id}")
     def product(product_id: str):
         p = S().get("products", product_id)
         if not p:
             raise DomainError("Unknown product.", 404, "not_found")
-        sizes = sorted({v["size"] for v in p["variants"]}, key=float)
+        sizes = sizes_in_order(p)
         guidance = {size: [{"rule_id": r["rule_id"], "message": r["customer_message"], "suggest_size": r["proposed_action"]["suggest_size"]}
                            for r in active_rules_for(S(), product_id, size)] for size in sizes}
         offers = [o for o in S().find("offers") if o["status"] == "active" and (not o["eligible_products"] or product_id in o["eligible_products"])]
